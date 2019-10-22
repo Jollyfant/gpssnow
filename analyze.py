@@ -10,6 +10,7 @@ Author: Mathijs Koymans, Oct 2019, KNMI
 """
 
 # Load the required libraries
+import random
 import numpy as np
 import os
 import sys
@@ -18,12 +19,8 @@ import matplotlib.pyplot as plt
 from dateutil.parser import parse
 from scipy.signal import lombscargle
 
-# GPS frequencies in Hz
-L1_GPS_FREQUENCY = 1575.42E6
-L2_GPS_FREQUENCY = 1227.60E6
-
-# Divide the frequency by the speed of light to get the wavelength
-LAMBDA = 299792458. / L1_GPS_FREQUENCY
+SHOW_PLOT = True
+SPATIAL_FILTER = False
 
 def parseSNRFile(line):
 
@@ -35,6 +32,7 @@ def parseSNRFile(line):
   # Columns are defined in: https://github.com/kristinemlarson/gnssSNR
   parameters = line.split()
 
+  # Important parameters are elevation, azimuth, S1 (L1)
   return {
     "satellite": int(parameters[0]),
     "elevation": float(parameters[1]),
@@ -50,6 +48,23 @@ def parseSNRFile(line):
   }
 
 
+def freq2height(freq):
+
+  """
+  def freq2height
+  Converts peak SNR frequency to receiver height
+  """
+
+  # GPS frequencies in Hz
+  L1_GPS_FREQUENCY = 1575.42E6
+  L2_GPS_FREQUENCY = 1227.60E6
+
+  # Wavelength = c / f
+  LAMBDA = 299792458. / L1_GPS_FREQUENCY
+
+  return (LAMBDA * freq) / (4. * np.pi)
+
+
 def getHeight(freqs, power):
 
   """
@@ -61,11 +76,11 @@ def getHeight(freqs, power):
   ind = np.argmax(power)
 
   # Extract maximum power and frequency
-  maxP = power[ind]
-  maxF = freqs[ind]
+  pMax = power[ind]
+  fMax = freqs[ind]
 
   # Extract h from equation (2)
-  return (LAMBDA * maxF) / (4. * np.pi)
+  return freq2height(fMax)
 
 
 def createPlot(x, y, s, z, f, p, date, i):
@@ -78,60 +93,57 @@ def createPlot(x, y, s, z, f, p, date, i):
    [3] Lomb-Scargle periodogram of the remaining data
   """
 
-  SHOW_PLOT = True
+  # Add date to the plot
+  plt.suptitle(date.isoformat() + " - Satellite: " + str(i))
 
-  # Plot the maximum
+  # One
+  ax = plt.subplot(3, 1, 1)
+  ax.set_ylabel("Volts")
+  plt.scatter(x, s, s=1)
+  plt.plot(x, z, c="orange")
+
+  # Two
+  ax = plt.subplot(3, 1, 2)
+  ax.set_ylabel("Volts")
+  ax.set_xlabel("Elevation Angle")
+  plt.scatter(x, y, s=1)
+
+  # Three
+  ax = plt.subplot(3, 1, 3)
+  ax.set_xlabel("Reflector Height (m)")
+  ax.set_ylabel("Relative Power")
+
+  # Get the maximum power pxx
   ind = np.argmax(p)
 
-  maxP = p[ind]
-  maxF = f[ind]
+  pMax = p[ind]
+  fMax = f[ind]
 
-  # Show a plot of SNR and periodogram
-  if SHOW_PLOT:
+  # Plot reflector height (m) instead of angular frequency (Hz)
+  f = freq2height(f)
+  fMax = freq2height(fMax)
 
-    # Add date to the plot
-    plt.suptitle(date.isoformat() + " - Satellite: " + str(i))
+  # Plot the lomb scargle spectrum
+  plt.plot(f, p)
 
-    # One
-    ax = plt.subplot(3, 1, 1)
-    ax.set_ylabel("Volts")
-    plt.scatter(x, s, s=1)
-    plt.plot(x, z, c="orange")
+  # Plot the peak value (green if significant)
+  if np.mean(p) + 2 * np.std(p) < pMax:
+    color = "green"
+  else:
+    color = "red"
 
-    # Two
-    ax = plt.subplot(3, 1, 2)
-    ax.set_ylabel("Volts")
-    ax.set_xlabel("Elevation Angle")
-    plt.scatter(x, y, s=1)
+  # Show the peak
+  plt.scatter(fMax, pMax, c=color)
 
-    # Three
-    ax = plt.subplot(3, 1, 3)
-    ax.set_xlabel("Reflector Height (m)")
-    ax.set_ylabel("Relative Power")
-
-    # Plot reflector height (m) instead of frequency
-    f = (LAMBDA * f) / (4. * np.pi)
-    maxF = (LAMBDA * maxF) / (4. * np.pi)
-
-    plt.plot(f, p)
-
-    # Plot the peak value (green if significant)
-    if np.mean(p) + 3 * np.std(p) < maxP:
-      color = "green"
-    else:
-      color = "red"
-
-    plt.scatter(maxF, maxP, c=color)
-
-    plt.show()
+  plt.show()
 
 
-def getPlaneCoordinates(azimuth, elevation):
+def getPlaneCoordinates(azimuth, elevationAngle):
 
   """
   def getPlaneCoordinates
   Returns x, y plane coordinates based on azimuth and elevation
-  angles with respect to the GPS receiver
+  angles with respect to the height of the GPS receiver
   """
 
   # In meters
@@ -139,7 +151,7 @@ def getPlaneCoordinates(azimuth, elevation):
 
   # Height of the receiver divided by tangent of angle equals
   # the distance of the receiver
-  r = RECEIVER_HEIGHT * np.tan(elevation)
+  r = RECEIVER_HEIGHT * np.tan(elevationAngle)
 
   # Combine with the azimuth to find the x, y coordinate of the reflection
   return r * np.sin(azimuth), r * np.cos(azimuth) 
@@ -153,7 +165,10 @@ def extractMetadata(file):
   """
 
   # Parse the filename to get info
-  return os.path.join("snr", file), parse(file[4:-10])
+  return (
+    os.path.join("snr", file),
+    parse(file[4:-10])
+  )
 
 
 def spatialFilter(obj):
@@ -163,11 +178,43 @@ def spatialFilter(obj):
   May filter reflections based on their spatial coordinates
   """
 
-  return True
   # Calculate the relative x, y coordinates
   x, y = getPlaneCoordinates(obj["azimuth"], obj["elevation"])
 
   return x >= 0 and y >= 0
+
+def sanitize(E, S1):
+
+  """
+  def sanitize
+  Sanitizes the input data and prepares it for processing
+  """
+
+  # Stop when elevation begins to decrease and satellite has passed overhead
+  # Can we used the removed information?
+  ind = np.argmax(np.diff(E) <= 0)
+  E = E[:ind]
+  S1 = S1[:ind]
+ 
+  # Sort by elevation: extract indices
+  idx = E.argsort()
+  E = E[idx]
+  S1 = S1[idx]
+
+  return E, S1
+
+def extract(SNRData):
+
+  """
+  def extract
+  Extracts the elevation, S1 data from a parsed SNR file
+  """
+  # Get the S1 and Elevation parameters
+
+  E = np.array(list(map(lambda x: x["elevation"], SNRData)))
+  S1 = np.array(list(map(lambda x: x["S1"], SNRData)))
+
+  return E, S1
 
 def processSNRFile(data, date):
 
@@ -183,38 +230,32 @@ def processSNRFile(data, date):
   for i in range(NUMBER_OF_SATELLITES):
   
     # Filter currently active satellite
-    datas = filter(lambda x: x["satellite"] == i, data)
+    SNRData = list(filter(lambda x: x["satellite"] == i, data))
   
     # Implement spatial filter based on receiver height
-    datas = list(filter(spatialFilter, datas))
+    if SPATIAL_FILTER:
+      SNRData = list(filter(spatialFilter, SNRData))
   
     # No data after filters
-    if len(datas) == 0:
+    if len(SNRData) == 0:
       continue
   
-    # Get the S1 and Elevation parameters
-    E = np.array(list(map(lambda x: x["elevation"], datas)))
-    S1 = np.array(list(map(lambda x: x["S1"], datas)))
+    # Extract the elevation and S1 (L1) data
+    E, S1 = extract(SNRData)
   
-    # Stop when elevation begins to decrease and satellite has passed overhead
-    # Can we used the removed information?
-    ind = np.argmax(np.diff(E) <= 0)
-    E = E[:ind]
-    S1 = S1[:ind]
-  
-    # Sort by elevation: extract indices
-    idx = E.argsort()
-    E = E[idx]
-    S1 = S1[idx]
+    # Clean the data
+    E, S1 = sanitize(E, S1)
   
     # Skip anything with not enough samples
     if len(E) < NUMBER_OF_SAMPLES_MIN:
       continue
   
     # Convert dBV to Volts: unclear to what reference the dB is expressed
+    # According to Shuanggen et al., 2016 this is correct:
     vS1 = 10.0 ** (S1 / 20.0)
 
     # Fit a 2nd order polynomial to the voltage data
+    # Remove Pd & Pr (direct signal)
     polynomial = np.poly1d(np.polyfit(E, vS1, 2))
   
     # Apply and subtract the fitted polynomial
@@ -228,7 +269,6 @@ def processSNRFile(data, date):
     #
     # Where:
     #    b = 4 * np.pi * h * (lambda ** -1)
-    # And:
     #    x = sin(e) (elevation)
     # 
     # The amplitude (A, a), phase shift (c, phi) can be ignored
@@ -237,25 +277,33 @@ def processSNRFile(data, date):
     sE = np.sin(np.radians(E))
 
     # List of angular frequencies to get the power at: should capture the peak
-    freqs = np.linspace(0.001, 1000, 1E3)
+    # 
+    freqs = np.linspace(0.01, 1000, 1E4)
 
     # Get the power at different periods using the Lomb Scargle algorithm for unregularly sampled data
     # Look at frequency content of SNR (dS1) as a function of sin(elevation)
-    power = lombscargle(sE, dS1, freqs, normalize=True)
+    power = lombscargle(
+      sE,
+      dS1,
+      freqs,
+      normalize=True
+    )
    
     # Create the plot
-    createPlot(E, dS1, vS1, polynomial(E), freqs, power, date, i)
+    if SHOW_PLOT:
+      createPlot(E, dS1, vS1, polynomial(E), freqs, power, date, i)
 
     # Get the reflection height
     h = getHeight(freqs, power)
 
+    # Write the date & expected receiver height to an outfile
     with open("outfile.csv", "a") as outfile:
       outfile.write(date.isoformat() + " " + str(h) + "\n")
 
 if __name__ == "__main__":
 
   # Go over the directory with gnssSNR files
-  for file in sorted(os.listdir("snr")):
+  for file in sorted(os.listdir("snr")): 
 
     # Create the filepath and extract the file date from its filename
     filepath, date = extractMetadata(file)
@@ -264,6 +312,7 @@ if __name__ == "__main__":
     with open(filepath, "r") as infile:
       lines = infile.read().split("\n")[:-1]
 
+    # Get all data points from the file
     data = list(map(parseSNRFile, lines))
 
     processSNRFile(data, date)
