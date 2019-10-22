@@ -297,7 +297,7 @@ def processSNRFile(data, date):
     h = getHeight(freqs, power)
 
     # Write the date & expected receiver height to an outfile
-    with open("outfile.csv", "a") as outfile:
+    with open("outfile.dat", "a") as outfile:
       outfile.write(date.isoformat() + " " + str(h) + "\n")
 
 if __name__ == "__main__":
