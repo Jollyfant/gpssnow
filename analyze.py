@@ -23,8 +23,7 @@ L1_GPS_FREQUENCY = 1575.42E6
 L2_GPS_FREQUENCY = 1227.60E6
 
 # Divide the frequency by the speed of light to get the wavelength
-# Reciprocal is implicit
-LAMBDA = L1_GPS_FREQUENCY / 299792458.
+LAMBDA = 299792458. / L1_GPS_FREQUENCY
 
 def parseSNRFile(line):
 
@@ -65,8 +64,8 @@ def getHeight(freqs, power):
   maxP = power[ind]
   maxF = freqs[ind]
 
-  # Correct angular frequency to frequency (2π) and extract h from equation (2)
-  return maxF / (2. * np.pi) / (4. * np.pi  * LAMBDA)
+  # Extract h from equation (2)
+  return (LAMBDA * maxF) / (4. * np.pi)
 
 
 def createPlot(x, y, s, z, f, p, date, i):
@@ -111,8 +110,8 @@ def createPlot(x, y, s, z, f, p, date, i):
     ax.set_ylabel("Relative Power")
 
     # Plot reflector height (m) instead of frequency
-    f = f / (2. * np.pi) / (4. * np.pi  * LAMBDA)
-    maxF = maxF / (2. * np.pi) / (4. * np.pi  * LAMBDA)
+    f = (LAMBDA * f) / (4. * np.pi)
+    maxF = (LAMBDA * maxF) / (4. * np.pi)
 
     plt.plot(f, p)
 
