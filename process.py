@@ -16,12 +16,10 @@ if __name__ == "__main__":
   
   for file in sorted(os.listdir(ROOT)):
   
-    if file != "ESLN201901010000.lb2":
-      continue
-  
     filepath = os.path.join(ROOT, file)
   
     # Write to .o and .n (nav) to RINEX folder
+    # Settings update some RINEX header fields
     with open(os.path.join(RINEXDIR, file + ".o"), "w") as outfile:
       subprocess.call([
         "./bin/teqc",
@@ -50,4 +48,3 @@ if __name__ == "__main__":
         os.path.join(RINEXDIR, file + ".n"),
         filepath
       ], stdout=outfile, stderr=subprocess.DEVNULL)
-  

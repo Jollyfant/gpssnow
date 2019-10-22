@@ -3,7 +3,9 @@
 Python script to infer snow height from GPS reflective interference
 Modified after MatLab script "analyse.m" provided by Flavio Canavo (INGV)
 
-Author: Mathijs Koymans, 2019, KNMI
+See Larson & Nievinski, 2012
+
+Author: Mathijs Koymans, Oct 2019, KNMI
 
 """
 
@@ -15,6 +17,14 @@ import matplotlib.pyplot as plt
 
 from dateutil.parser import parse
 from scipy.signal import lombscargle
+
+# GPS frequencies in Hz
+L1_GPS_FREQUENCY = 1575.42E6
+L2_GPS_FREQUENCY = 1227.60E6
+
+# Divide the frequency by the speed of light to get the wavelength
+# Reciprocal is implicit
+LAMBDA = L1_GPS_FREQUENCY / 299792458.
 
 def parseSNRFile(line):
 
@@ -41,7 +51,25 @@ def parseSNRFile(line):
   }
 
 
-def createPlot(x, y, s, z, f, p):
+def getHeight(freqs, power):
+
+  """
+  def getHeight
+  Returns the frequency of the peak of the lomb scargle periodogram
+  """
+
+  # Get the index of maximum power
+  ind = np.argmax(power)
+
+  # Extract maximum power and frequency
+  maxP = power[ind]
+  maxF = freqs[ind]
+
+  # Correct angular frequency to frequency (2π) and extract h from equation (2)
+  return maxF / (2. * np.pi) / (4. * np.pi  * LAMBDA)
+
+
+def createPlot(x, y, s, z, f, p, date, i):
 
   """
   Def createPlot
@@ -51,18 +79,7 @@ def createPlot(x, y, s, z, f, p):
    [3] Lomb-Scargle periodogram of the remaining data
   """
 
-  # One
-  plt.subplot(3, 1, 1)
-  plt.scatter(x, s, s=1)
-  plt.plot(x, z, c="orange")
-
-  # Two
-  plt.subplot(3, 1, 2)
-  plt.scatter(x, y, s=1)
-
-  # Three
-  plt.subplot(3, 1, 3)
-  plt.plot(f, p)
+  SHOW_PLOT = True
 
   # Plot the maximum
   ind = np.argmax(p)
@@ -70,14 +87,44 @@ def createPlot(x, y, s, z, f, p):
   maxP = p[ind]
   maxF = f[ind]
 
-  if np.mean(p) + 3 * np.std(p) < maxP:
-    color = "green"
-  else:
-    color = "red"
+  # Show a plot of SNR and periodogram
+  if SHOW_PLOT:
 
-  plt.scatter(maxF, maxP, c=color)
+    # Add date to the plot
+    plt.suptitle(date.isoformat() + " - Satellite: " + str(i))
 
-  plt.show()
+    # One
+    ax = plt.subplot(3, 1, 1)
+    ax.set_ylabel("Volts")
+    plt.scatter(x, s, s=1)
+    plt.plot(x, z, c="orange")
+
+    # Two
+    ax = plt.subplot(3, 1, 2)
+    ax.set_ylabel("Volts")
+    ax.set_xlabel("Elevation Angle")
+    plt.scatter(x, y, s=1)
+
+    # Three
+    ax = plt.subplot(3, 1, 3)
+    ax.set_xlabel("Reflector Height (m)")
+    ax.set_ylabel("Relative Power")
+
+    # Plot reflector height (m) instead of frequency
+    f = f / (2. * np.pi) / (4. * np.pi  * LAMBDA)
+    maxF = maxF / (2. * np.pi) / (4. * np.pi  * LAMBDA)
+
+    plt.plot(f, p)
+
+    # Plot the peak value (green if significant)
+    if np.mean(p) + 3 * np.std(p) < maxP:
+      color = "green"
+    else:
+      color = "red"
+
+    plt.scatter(maxF, maxP, c=color)
+
+    plt.show()
 
 
 def getPlaneCoordinates(azimuth, elevation):
@@ -136,7 +183,6 @@ def processSNRFile(data, date):
   # Go over all possible satellites in the file (32)
   for i in range(NUMBER_OF_SATELLITES):
   
-    print(i)
     # Filter currently active satellite
     datas = filter(lambda x: x["satellite"] == i, data)
   
@@ -166,27 +212,46 @@ def processSNRFile(data, date):
     if len(E) < NUMBER_OF_SAMPLES_MIN:
       continue
   
-    # Fit a 2nd order polynomial to the data
-    polynomial = np.poly1d(np.polyfit(E, S1, 2))
+    # Convert dBV to Volts: unclear to what reference the dB is expressed
+    vS1 = 10.0 ** (S1 / 20.0)
+
+    # Fit a 2nd order polynomial to the voltage data
+    polynomial = np.poly1d(np.polyfit(E, vS1, 2))
   
     # Apply and subtract the fitted polynomial
-    dS1 = S1 - polynomial(E)
+    dS1 = vS1 - polynomial(E)
   
-    # Convert decibels to volts?
-    vdSNR = (10.0 ** (dS1 / 10.0))
-  
-    # Lomb scarlge algorithm to get periods
-    dE = np.sin(np.radians(E))
-  
-    # List of frequencies to get the power at
-    freqs = np.linspace(0.001, 1000, 1E3)
-  
-    # Get the power at different periods
-    power = lombscargle(dE, dS1, freqs)
-  
-    # Create the plot
-    createPlot(E, dS1, S1, polynomial(E), freqs, power)
+    # From Larson & Nievinski, 2012 - equation (2)
+    # 
+    # SNR ~ A * cos(4 * np.pi * h * (lambda ** -1) * sin(e) + phi) (eq. 2)
+    # 
+    # To find h, we have to identify the frequency of a function SNR = a * cos(bx + c)
+    #
+    # Where:
+    #    b = 4 * np.pi * h * (lambda ** -1)
+    # And:
+    #    x = sin(e) (elevation)
+    # 
+    # The amplitude (A, a), phase shift (c, phi) can be ignored
 
+    # Create sin(e) by taking the sine of the elevation
+    sE = np.sin(np.radians(E))
+
+    # List of angular frequencies to get the power at: should capture the peak
+    freqs = np.linspace(0.001, 1000, 1E3)
+
+    # Get the power at different periods using the Lomb Scargle algorithm for unregularly sampled data
+    # Look at frequency content of SNR (dS1) as a function of sin(elevation)
+    power = lombscargle(sE, dS1, freqs, normalize=True)
+   
+    # Create the plot
+    createPlot(E, dS1, vS1, polynomial(E), freqs, power, date, i)
+
+    # Get the reflection height
+    h = getHeight(freqs, power)
+
+    with open("outfile.csv", "a") as outfile:
+      outfile.write(date.isoformat() + " " + str(h) + "\n")
 
 if __name__ == "__main__":
 
