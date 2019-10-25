@@ -10,17 +10,17 @@ Author: Mathijs Koymans, Oct 2019, KNMI
 """
 
 # Load the required libraries
-import random
 import numpy as np
 import os
-import sys
 import matplotlib.pyplot as plt
 
 from dateutil.parser import parse
 from scipy.signal import lombscargle
 
-SHOW_PLOT = True
+# Some options
+SHOW_PLOT = False
 SPATIAL_FILTER = False
+APPLY_CORR = True
 
 def parseSNRFile(line):
 
@@ -47,7 +47,6 @@ def parseSNRFile(line):
     "S8": float(parameters[10])
   }
 
-
 def freq2height(freq):
 
   """
@@ -64,6 +63,30 @@ def freq2height(freq):
 
   return (LAMBDA * freq) / (4. * np.pi)
 
+def getTemperature(date):
+
+  """
+  def getTemperature
+  Returns the temperature that belongs to a given date (month)
+  """
+
+  # Average monthly temperatures
+  MONTHLY_TEMPERATURES = [
+   1, -1, 5, 11, 18, 22, 23, 21, 17, 12, 10, 8
+  ]
+
+  # Month index starts at 1
+  return MONTHLY_TEMPERATURES[date.month - 1]
+
+def getCorrection(elevations, date):
+
+  # hPa at 800 meters
+  PRESSURE = 800
+  temperature = getTemperature(date) 
+
+  phi = np.radians(elevations + 7.31 / (elevations + 4.4))
+
+  return (510. / (9 * temperature / 5 + 492)) * (PRESSURE / 1010.16) * (1. / np.tan(phi))
 
 def getHeight(freqs, power):
 
@@ -146,8 +169,8 @@ def getPlaneCoordinates(azimuth, elevationAngle):
   angles with respect to the height of the GPS receiver
   """
 
-  # In meters
-  RECEIVER_HEIGHT = 2
+  # GPS receiver height in meters
+  RECEIVER_HEIGHT = 1.5
 
   # Height of the receiver divided by tangent of angle equals
   # the distance of the receiver
@@ -190,12 +213,6 @@ def sanitize(E, S1):
   Sanitizes the input data and prepares it for processing
   """
 
-  # Stop when elevation begins to decrease and satellite has passed overhead
-  # Can we used the removed information?
-  ind = np.argmax(np.diff(E) <= 0)
-  E = E[:ind]
-  S1 = S1[:ind]
- 
   # Sort by elevation: extract indices
   idx = E.argsort()
   E = E[idx]
@@ -216,6 +233,61 @@ def extract(SNRData):
 
   return E, S1
 
+def split(E, S1):
+
+  """
+  def split
+  Recursively split SNR trace in multiple ascending traces
+  """
+
+  traces = list()
+
+  while True:
+
+    # Continue until we only have a single ascending trace
+    ind = np.argmax(np.diff(E) <= 0)
+
+    if ind == 0:
+      break
+
+    # Save one trace
+    E1 = E[:ind]
+    S11 = S1[:ind]
+
+    # Save the trace for processing
+    traces.append((E1, S11))
+
+    # Cut the next
+    E = E[ind:]
+    S1 = S1[ind:]
+
+  # Remember the remaining trace!
+  traces.append((E, S1))
+
+  return traces
+  
+def validate(E, S1):
+
+  """
+  def validate
+  Validates E, S1 by some simple quality metrics
+  """
+
+  # Get the length of the trace
+  # Skip anything with not enough samples
+  if len(E) < NUMBER_OF_SAMPLES_MIN:
+    return False
+
+  # Remove traces with very high scatter
+  if np.std(np.diff(S1)) > 1:
+    return False
+
+  # Remove traces with gaps > 3 degrees in elevation
+  if np.max(np.diff(E)) > 3:
+    return False
+
+  return True
+
 def processSNRFile(data, date):
 
   """
@@ -225,6 +297,8 @@ def processSNRFile(data, date):
 
   NUMBER_OF_SATELLITES = 32
   NUMBER_OF_SAMPLES_MIN = 2000
+
+  sats = list()
 
   # Go over all possible satellites in the file (32)
   for i in range(NUMBER_OF_SATELLITES):
@@ -239,71 +313,84 @@ def processSNRFile(data, date):
     # No data after filters
     if len(SNRData) == 0:
       continue
-  
+
     # Extract the elevation and S1 (L1) data
     E, S1 = extract(SNRData)
-  
-    # Clean the data
-    E, S1 = sanitize(E, S1)
-  
-    # Skip anything with not enough samples
-    if len(E) < NUMBER_OF_SAMPLES_MIN:
-      continue
-  
-    # Convert dBV to Volts: unclear to what reference the dB is expressed
-    # According to Shuanggen et al., 2016 this is correct:
-    vS1 = 10.0 ** (S1 / 20.0)
 
-    # Fit a 2nd order polynomial to the voltage data
-    # Remove Pd & Pr (direct signal)
-    polynomial = np.poly1d(np.polyfit(E, vS1, 2))
+    for (E, S1) in split(E, S1):
+
+      # Clean the data
+      E, S1 = sanitize(E, S1)
+ 
+      # Validate the trace for its quality
+      if not validate(E, S1):
+        continue
+
+      # Convert dBV to Volts: unclear to what reference the dB is expressed
+      # According to Shuanggen et al., 2016 this is correct:
+      vS1 = 10.0 ** (S1 / 20.0)
+
+      # Apply P/T correction (Peng et al., 2019)
+      # Application of GNSS interferometric reflectometry for detecting storm surges 
+      if APPLY_CORR:
+        E += getCorrection(E, date)
+
+      # Fit a 2nd order polynomial to the voltage data
+      # Remove Pd & Pr (direct signal)
+      polynomial = np.poly1d(np.polyfit(E, vS1, 5))
+
+      # Apply and subtract the fitted polynomial
+      dS1 = vS1 - polynomial(E)
   
-    # Apply and subtract the fitted polynomial
-    dS1 = vS1 - polynomial(E)
-  
-    # From Larson & Nievinski, 2012 - equation (2)
-    # 
-    # SNR ~ A * cos(4 * np.pi * h * (lambda ** -1) * sin(e) + phi) (eq. 2)
-    # 
-    # To find h, we have to identify the frequency of a function SNR = a * cos(bx + c)
-    #
-    # Where:
-    #    b = 4 * np.pi * h * (lambda ** -1)
-    #    x = sin(e) (elevation)
-    # 
-    # The amplitude (A, a), phase shift (c, phi) can be ignored
+      # From Larson & Nievinski, 2012 - equation (2)
+      # 
+      # SNR ~ A * cos(4 * np.pi * h * (lambda ** -1) * sin(e) + phi) (eq. 2)
+      # 
+      # To find h, we have to identify the frequency of a function SNR = a * cos(bx + c)
+      #
+      # Where:
+      #    b = 4 * np.pi * h * (lambda ** -1)
+      #    x = sin(e) (elevation)
+      # 
+      # The amplitude (A, a), phase shift (c, phi) can be ignored
 
-    # Create sin(e) by taking the sine of the elevation
-    sE = np.sin(np.radians(E))
+      # Create sin(e) by taking the sine of the elevation
+      sE = np.sin(np.radians(E))
 
-    # List of angular frequencies to get the power at: should capture the peak
-    # 
-    freqs = np.linspace(0.01, 1000, 1E4)
+      # Linear space of angular frequencies to get the power at: should capture the peak
+      freqs = np.linspace(0.01, 1000, 1E4)
 
-    # Get the power at different periods using the Lomb Scargle algorithm for unregularly sampled data
-    # Look at frequency content of SNR (dS1) as a function of sin(elevation)
-    power = lombscargle(
-      sE,
-      dS1,
-      freqs,
-      normalize=True
-    )
+      # Get the power at different periods using the Lomb Scargle algorithm for unregularly sampled data
+      # Look at frequency content of SNR (dS1) as a function of sin(elevation)
+      power = lombscargle(
+        sE,
+        dS1,
+        freqs,
+        normalize=True
+      )
    
-    # Create the plot
-    if SHOW_PLOT:
-      createPlot(E, dS1, vS1, polynomial(E), freqs, power, date, i)
+      # Create the plot
+      if SHOW_PLOT:
+        createPlot(E, dS1, vS1, polynomial(E), freqs, power, date, i)
 
-    # Get the reflection height
-    h = getHeight(freqs, power)
+      # Get the reflection height
+      h = getHeight(freqs, power)
 
-    # Write the date & expected receiver height to an outfile
-    with open("outfile.dat", "a") as outfile:
-      outfile.write(date.isoformat() + " " + str(h) + "\n")
+      with open("outfile.dat", "a") as outfile:
+        outfile.write(date.isoformat() + " " + str(h) + "\n")
+
 
 if __name__ == "__main__":
 
+  """
+  def __main__
+  Extracts reflector height using GNSS reflective interferometry  
+  """
+
+  files = sorted(os.listdir("snr"))
+
   # Go over the directory with gnssSNR files
-  for file in sorted(os.listdir("snr")): 
+  for file in files:
 
     # Create the filepath and extract the file date from its filename
     filepath, date = extractMetadata(file)

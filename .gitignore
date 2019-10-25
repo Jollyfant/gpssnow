@@ -1,4 +1,5 @@
 RINEX
+outfile*
 .DS_STORE
 snr
 bin

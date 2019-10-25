@@ -55,6 +55,6 @@ if __name__ == "__main__":
       output,
       SP3File,
       GNSSSNR_OP
-    ])
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     print("Wrote output to %s." % output)
