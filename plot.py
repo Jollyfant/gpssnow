@@ -3,14 +3,10 @@ import matplotlib.dates as mdates
 from dateutil.parser import parse
 import matplotlib.pyplot as plt
 
-if __name__ == "__main__":
+def parseData(data, type):
 
   dates = dict()
 
-  # Open the file written by analyze.py
-  with open("outfile.dat", "r") as infile:
-    data = infile.read().split("\n")[:-1]
-    
   for line in data:
   
     # Extact data from line
@@ -20,33 +16,48 @@ if __name__ == "__main__":
     if date not in dates:
       dates[date] = list()
 
-    dates[date].append(2.1 - float(value))
+    dates[date].append(float(value))
 
   pDates = []
   pVals = []
 
   for date in dates:
 
-    if date in ["2019-03-28T00:00:00", "2019-04-17T00:00:00", "2019-04-24T09:32:00"]:
-      continue
-
     values = np.array(dates[date])
 
-    while True:
+    if len(values) > 1:
+      while True:
 
-      std = 2 * np.std(values)
-      mask = np.logical_and(values < np.mean(values) + std, values > np.mean(values) - std)
+        std = 2 * np.std(values)
+        mask = np.logical_and(values < np.mean(values) + std, values > np.mean(values) - std)
 
-      if np.all(mask):
-        break
+        if np.all(mask):
+          break
 
-      values = values[mask]
+        values = values[mask]
 
     pDates.append(parse(date))
     pVals.append(np.mean(values))
 
-  plt.ylim(0)
+  return pDates, pVals
+
+if __name__ == "__main__":
+
+  # Open the file written by analyze.py
+  with open("outfile-S1.dat", "r") as infile:
+    dataS1 = infile.read().split("\n")[:-1]
+
+  # Open the file written by analyze.py
+  with open("outfile-S2.dat", "r") as infile:
+    dataS2 = infile.read().split("\n")[:-1]
+
+  oneX, oneY = parseData(dataS1, "S1")
+  twoX, twoY = parseData(dataS2, "S2")
+
+  #oneY = np.convolve(oneY, np.ones((31,))/31, mode='valid')
+  #twoY = np.convolve(twoY, np.ones((31,))/31, mode='valid')
 
   # Plot the data
-  plt.scatter(pDates, pVals, c='orange')
+  plt.scatter(oneX, oneY, c='orange')
+  plt.scatter(twoX, twoY, c='blue')
   plt.show()
