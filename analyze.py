@@ -16,6 +16,7 @@ import signal
 import matplotlib.pyplot as plt
 import datetime
 import multiprocessing 
+import sys
 
 from dateutil.parser import parse
 from scipy.signal import lombscargle
@@ -49,13 +50,8 @@ def parseSNRFile(line, date):
     "elevation": elevation,
     "azimuth": float(parameters[2]),
     "seconds": float(parameters[3]),
-    "reflector": float(parameters[4]),
-    "S6": float(parameters[5]),
     "S1": float(parameters[6]),
-    "S2": float(parameters[7]),
-    "S5": float(parameters[8]),
-    "S7": float(parameters[9]),
-    "S8": float(parameters[10])
+    "S2": float(parameters[7])
   }
 
 def freq2height(freq, type):
@@ -99,7 +95,6 @@ def getCorrection(elevations, date):
   def getCorrection
   Elevation height (degrees) - The Calculation of Astronomical Refraction in Marine Navigation
   DOI: https://doi.org/10.1017/S0373463300022037
-  TODO:: implement H
   """
 
   # hPa at 1800 meters altitude
@@ -109,6 +104,7 @@ def getCorrection(elevations, date):
   phi = np.radians(elevations + (7.31 / (elevations + 4.4)))
 
   return (510. / ((9 * temperature / 5) + 492)) * (PRESSURE / 1010.16) * (1. / np.tan(phi))
+
 
 def getHeight(freqs, power, type):
 
@@ -229,42 +225,39 @@ def spatialFilter(obj):
   # Calculate the relative x, y coordinates
   x, y = getPlaneCoordinates(obj["azimuth"], obj["elevation"])
 
+  # This quadrant returns the best results (no obstructions/vegetation)?
+  # Can be confirmed by looking at the reflector height results and
+  # cross referencing them against the xy-position of the reflections
+  # using the provided xy.py script
   return x >= 0 and y >= 0
 
-def sanitize(E, S1):
-
-  """
-  def sanitize
-  Sanitizes the input data and prepares it for processing
-  """
-
-  # Sort by elevation: extract indices
-  idx = E.argsort()
-  E = E[idx]
-  S1 = S1[idx]
-
-  return E, S1
 
 def extract(SNRData, key, date):
 
   """
   def extract
-  Extracts the elevation, S1 data from a parsed SNR file
+  Extracts the elevation, S?, seconds from a parsed SNR file
   """
 
   # Get the S1 and Elevation parameters
-  E = np.array(list(map(lambda x: x["elevation"], SNRData)))
-  S1 = np.array(list(map(lambda x: x[key], SNRData)))
-  s = np.array(list(map(lambda x: x["seconds"], SNRData)))
+  elevation = np.array(list(map(lambda x: x["elevation"], SNRData)))
+  signal = np.array(list(map(lambda x: x[key], SNRData)))
+  seconds = np.array(list(map(lambda x: x["seconds"], SNRData)))
 
-  return E, S1, s
+  return elevation, signal, seconds
+
 
 def split(E, S1, s):
 
+  """
+  def split
+  Splits a satellite trace in multiple traces
+  """
   traces = list()
 
   while True:
 
+    # A gap of over 1h should be a new pass
     ind = np.argmax(np.diff(s) > 3600)
 
     if ind == 0:
@@ -284,9 +277,10 @@ def split(E, S1, s):
 
   # Remember the remaining trace!
   traces.append((E, S1, s))
-
+  
   return traces
   
+
 def validate(E, S1, s):
 
   """
@@ -296,22 +290,23 @@ def validate(E, S1, s):
 
   # Minimum number of samples
   NUMBER_OF_SAMPLES_MIN = 2000
+  SCATTER_MAXIMUM = 1
 
   # Get the length of the trace
   # Skip anything with not enough samples
   if len(E) < NUMBER_OF_SAMPLES_MIN:
-    return False
+    raise Exception("Not enough required samples (%s)." % NUMBER_OF_SAMPLES_MIN)
 
-  # Remove traces with high scatter
-  if np.std(np.diff(S1)) > 1:
-    return False
+  # Remove traces with high internal scatter
+  # Check the standard deviation of the difference between neighbouring samples
+  if np.std(np.diff(S1)) > SCATTER_MAXIMUM:
+    raise Exception("Trace sample scatter is too high.")
 
-  # Some weird hyperbole?!
-  _, r, _, _, _ = np.polyfit(s, E, 1, full=True)
-  if r[0] / len(s) > 0.1:
-    return False
+  # Remove traces that are curved in the s, E domain
+  # The satellite elevation angle must monotonically increase or decrease
+  if not np.all(np.diff(E) < 0) or np.all(np.diff(E) > 0):
+    raise Exception("Trace elevation is not monotonically increasing.")
 
-  return True
 
 def processSNRFile(data, date):
 
@@ -320,10 +315,10 @@ def processSNRFile(data, date):
   Processes a single SNR file to extract snow height information
   """
 
-  results = {
+  results = dict({
     "date": date,
     "values": list()
-  }
+  })
 
   # Go over all possible GPS satellites in the snr file (1 - 32)
   for i in range(1, 33):
@@ -335,7 +330,7 @@ def processSNRFile(data, date):
     if SPATIAL_FILTER:
       SNRData = list(filter(spatialFilter, SNRData))
   
-    # No data after filters
+    # No data after spatial filter
     if len(SNRData) <= 1:
       continue
 
@@ -355,11 +350,11 @@ def processSNRFile(data, date):
 
 def processSignal(i, E, S1, s, type, date):
 
-  # Clean the data
-  #E, S1 = sanitize(E, S1)
- 
   # Validate the trace for its quality
-  if not validate(E, S1, s):
+  try:
+    validate(E, S1, s)
+  except Exception as e:
+    print("SNR process aborted for satellite %s on %s: %s" % (i, date.isoformat(), e))
     return None
 
   # Convert dBV to Volts: unclear to what reference the dB is expressed
@@ -404,8 +399,12 @@ def processSignal(i, E, S1, s, type, date):
   if SHOW_PLOT:
     createPlot(E, dS1, vS1, polynomial(E), freqs, power, date, i, type)
 
+  height = getHeight(freqs, power, type)
+
+  print("SNR process completed for satellite %s on %s with reflector height:  %.3f." % (i, date.isoformat(), height))
+
   # Get the reflection height
-  return getHeight(freqs, power, type)
+  return height
 
 def worker(file):
 
@@ -416,9 +415,6 @@ def worker(file):
 
   # Create the filepath and extract the file date from its filename
   filepath, date = extractMetadata(file)
-
-  if date < datetime.datetime(2017, 3, 25):
-    return
 
   # Open a single data file for reading
   with open(filepath, "r") as infile:
@@ -441,6 +437,7 @@ def initWorker():
   # Ignore signal interrupts in the worker process
   signal.signal(signal.SIGINT, signal.SIG_IGN)
 
+
 if __name__ == "__main__":
 
   """
@@ -448,17 +445,22 @@ if __name__ == "__main__":
   Extracts reflector height using GNSS reflective interferometry  
   """
 
-  print("Initializing pool of %i workers for processing." % multiprocessing.cpu_count())
+  NUMBER_OF_PROCESSES = multiprocessing.cpu_count()
 
   # Get collection of the SNR files
   files = sorted(os.listdir("snr"))
 
+  print("Initializing set of %i files for processing." % len(files))
+
   if SHOW_PLOT:
     for file in files:
       worker(file)
+    sys.exit(0)
+
+  print("Initializing pool of %i workers for processing." % NUMBER_OF_PROCESSES)
 
   # Create a pool (one process for each core)
-  pool = multiprocessing.Pool(multiprocessing.cpu_count(), initWorker)
+  pool = multiprocessing.Pool(NUMBER_OF_PROCESSES, initWorker)
 
   try:
     # Use a pool of four workers
@@ -480,3 +482,5 @@ if __name__ == "__main__":
   finally:
     pool.close()
     pool.join()
+
+  sys.exit(0)

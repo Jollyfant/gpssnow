@@ -16,6 +16,9 @@ for file in files:
 
   filepath, date = extractMetadata(file)
 
+  if date < datetime.datetime(2015, 1, 1):
+    continue
+
   # Open a single data file for reading
   with open(filepath, "r") as infile:
     lines = infile.read().split("\n")[:-1]
@@ -25,7 +28,7 @@ for file in files:
 
   for i in range(1, 33):
 
-    if i != 20:
+    if i != 16:
       continue
 
     # Filter currently active satellite
@@ -37,6 +40,7 @@ for file in files:
     # Get and show the coordinates
     x, y = getPlaneCoordinates(azi, eli)
 
+    plt.title(date.isoformat())
     plt.scatter(x, y)
     plt.axhline(y=0)
     plt.axvline(x=0)

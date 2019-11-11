@@ -1,4 +1,5 @@
 RINEX
+__pycache__
 outfile*
 .DS_STORE
 snr

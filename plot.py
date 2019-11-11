@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
 
 # Options
-PLOT_STACK = False
+PLOT_STACK = True
 WRITE_OUTFILE = True
 
 def reject_outliers(data):
@@ -173,7 +173,7 @@ def plotOverview(data):
 if __name__ == "__main__":
 
   # Open the file written by analyze.py
-  with open("outfile.dat", "r") as infile:
+  with open("outfile-good.dat", "r") as infile:
     data = infile.read().split("\n")[:-1]
   
   if PLOT_STACK:
