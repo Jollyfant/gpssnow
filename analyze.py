@@ -27,31 +27,36 @@ SPATIAL_FILTER = True
 APPLY_CORR = True
 POLY_ORDER = 2
 
-def parseSNRFile(line, date):
+def parseSNRFile(lines, date):
 
-  """
-  Def parseSNRFile
-  Reads out an SNR file created by program: gnssSNR
-  """
+  satellites = list()
+  elevations = list()
+  azimuths = list()
+  seconds = list()
+  S1s = list()
+  S2s = list()
 
-  # Columns are defined in: https://github.com/kristinemlarson/gnssSNR
-  parameters = line.split()
+  for line in lines:
 
-  elevation = float(parameters[1])
+    (satellite, elevation, azimuth, second, _, _, S1, S2, *void) = line.split()
 
-  # Apply P/T correction (Peng et al., 2019)
-  # Application of GNSS interferometric reflectometry for detecting storm surge
+    satellites.append(int(satellite))
+    elevations.append(float(elevation))
+    azimuths.append(float(azimuth))
+    seconds.append(float(second))
+    S1s.append(float(S1))
+    S2s.append(float(S2))
+
   if APPLY_CORR:
-    elevation += getCorrection(elevation, date)
+    elevations += getCorrection(np.array(elevations), date)
 
-  # Important parameters are elevation, azimuth, S1 (L1)
   return {
-    "satellite": int(parameters[0]),
-    "elevation": elevation,
-    "azimuth": float(parameters[2]),
-    "seconds": float(parameters[3]),
-    "S1": float(parameters[6]),
-    "S2": float(parameters[7])
+    "satellites": np.array(satellites),
+    "elevations": np.array(elevations),
+    "azimuths": np.array(azimuths),
+    "seconds": np.array(seconds),
+    "S1": np.array(S1s),
+    "S2": np.array(S2s)
   }
 
 def freq2height(freq, type):
@@ -215,7 +220,7 @@ def extractMetadata(file):
   )
 
 
-def spatialFilter(obj):
+def spatialFilter(elevations, azimuths):
 
   """
   def spatialFilter
@@ -223,28 +228,13 @@ def spatialFilter(obj):
   """
 
   # Calculate the relative x, y coordinates
-  x, y = getPlaneCoordinates(obj["azimuth"], obj["elevation"])
+  x, y = getPlaneCoordinates(elevations, azimuths)
 
   # This quadrant returns the best results (no obstructions/vegetation)?
   # Can be confirmed by looking at the reflector height results and
   # cross referencing them against the xy-position of the reflections
   # using the provided xy.py script
-  return x >= 0 and y >= 0
-
-
-def extract(SNRData, key, date):
-
-  """
-  def extract
-  Extracts the elevation, S?, seconds from a parsed SNR file
-  """
-
-  # Get the S1 and Elevation parameters
-  elevation = np.array(list(map(lambda x: x["elevation"], SNRData)))
-  signal = np.array(list(map(lambda x: x[key], SNRData)))
-  seconds = np.array(list(map(lambda x: x["seconds"], SNRData)))
-
-  return elevation, signal, seconds
+  return np.where((x >= 0) & (y >= 0))
 
 
 def split(E, S1, s):
@@ -315,6 +305,8 @@ def processSNRFile(data, date):
   Processes a single SNR file to extract snow height information
   """
 
+  raise Exception()
+
   results = dict({
     "date": date,
     "values": list()
@@ -323,25 +315,37 @@ def processSNRFile(data, date):
   # Go over all possible GPS satellites in the snr file (1 - 32)
   for i in range(1, 33):
   
-    # Filter currently active satellite
-    SNRData = list(filter(lambda x: x["satellite"] == i, data))
+    # Get the correct satellite
+    idx = data["satellites"] == i
+
+    # Implement spatial filter based on receiver height
+    elevations = data["elevations"][idx]
+    azimuths = data["azimuths"][idx]
+    seconds = data["seconds"][idx]
+    S1 = data["S1"][idx]
+    S2 = data["S2"][idx]
   
     # Implement spatial filter based on receiver height
     if SPATIAL_FILTER:
-      SNRData = list(filter(spatialFilter, SNRData))
-  
+      idx = spatialFilter(elevations, azimuths)
+
+    elevations = elevations[idx]
+    seconds = seconds[idx]
+    S1 = S1[idx]
+    S2 = S2[idx]
+
     # No data after spatial filter
-    if len(SNRData) <= 1:
+    if len(elevations) <= 1:
       continue
 
     # Extract the elevation and S1 (L1) data
-    for (E, S1, s) in split(*extract(SNRData, "S1", date)):
+    for (E, S1, s) in split(elevations, S1, seconds):
       height = processSignal(i, E, S1, s, "S1", date)
       if height is not None:
         results["values"].append((height, i, "S1"))
 
     # Extract the elevation and S1 (L1) data
-    for (E, S2, s) in split(*extract(SNRData, "S2", date)):
+    for (E, S2, s) in split(elevations, S2, seconds):
       height = processSignal(i, E, S2, s, "S2", date)
       if height is not None:
         results["values"].append((height, i, "S2"))
@@ -349,6 +353,11 @@ def processSNRFile(data, date):
   return results
 
 def processSignal(i, E, S1, s, type, date):
+
+  """
+  def processSignal
+  Processes a single S1 or S2 signal
+  """
 
   # Validate the trace for its quality
   try:
@@ -420,10 +429,12 @@ def worker(file):
   with open(filepath, "r") as infile:
     lines = infile.read().split("\n")[:-1]
 
-  # Get all data points from the file
-  data = list(map(lambda x: parseSNRFile(x, date), lines))
+  data = parseSNRFile(lines, date)
 
-  return processSNRFile(data, date)
+  try:
+    return processSNRFile(data, date)
+  except Exception as e:
+    return None
 
 def initWorker():
 

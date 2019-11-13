@@ -4,12 +4,22 @@ from dateutil.parser import parse
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
 
+#plt.rcParams['font.family'] = 'serif'
+#plt.rcParams['font.serif'] = 'Ubuntu'
+#plt.rcParams['font.monospace'] = 'Ubuntu Mono'
+#plt.rcParams['font.size'] = 10
+#plt.rcParams['axes.labelsize'] = 10
+#plt.rcParams['xtick.labelsize'] = 8
+#plt.rcParams['ytick.labelsize'] = 8
+#plt.rcParams['legend.fontsize'] = 10
+#plt.rcParams['figure.titlesize'] = 12
+
 # Options
 PLOT_STACK = True
 WRITE_OUTFILE = True
 
 def reject_outliers(data):
-  return data[abs(data - np.mean(data)) < 1 * np.std(data)]
+  return data[abs(data - np.mean(data)) < np.std(data)]
 
 def runningMean(N, data):
   
@@ -23,6 +33,9 @@ def runningMean(N, data):
   mean = []
 
   for i in range(t, len(data) - t):
+    if np.isnan(data[i]):
+      mean.append(np.nan)
+      continue
     v = []
     for j in range(i - t, i + t + 1):
       if np.isnan(data[j]):
@@ -92,8 +105,7 @@ def plotStack(data):
 
   for date in dates:
     ds.append(parse(date))
-
-    if(parse(date).month > 5 and parse(date).month < 11):
+    if (parse(date).month > 5 and parse(date).month < 11):
       vs.append(0)
     else:
       vs.append(np.mean(dates[date]))
@@ -101,20 +113,25 @@ def plotStack(data):
   vs = np.array(vs)
   ds = np.array(ds)
 
+  vs[vs < 0] = 0
+
   # Take a smoothed running mean for 1 week
   vs = runningMean(15, vs)
   ds = ds[7:-7]
-
-  # Truncate everything below 0
-  vs[vs < 0] = 0
 
   with open("snow-curve.txt", "w") as outfile:
     for date, value in zip(ds, vs):
       outfile.write(date.isoformat() + " " + str(value) + "\n")
   
   # Plot and show
-  plt.scatter(ds, vs, s=4)
-  plt.plot(ds, vs)
+  with plt.style.context("grayscale"):
+
+    plt.plot(ds, vs, c='darkgray', zorder=0)
+    plt.scatter(ds, vs, s=4, c='gray', zorder=1)
+    plt.title("Expected snow heights during winter (2015 - 2019)")
+    plt.ylabel("Expected Snow Height (m)")
+    plt.xlabel("Date")
+
   plt.show()
 
 def plotOverview(data):
