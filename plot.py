@@ -1,51 +1,69 @@
 import numpy as np
 import datetime
-from dateutil.parser import parse
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
+import matplotlib
 
-#plt.rcParams['font.family'] = 'serif'
-#plt.rcParams['font.serif'] = 'Ubuntu'
-#plt.rcParams['font.monospace'] = 'Ubuntu Mono'
-#plt.rcParams['font.size'] = 10
-#plt.rcParams['axes.labelsize'] = 10
-#plt.rcParams['xtick.labelsize'] = 8
-#plt.rcParams['ytick.labelsize'] = 8
-#plt.rcParams['legend.fontsize'] = 10
-#plt.rcParams['figure.titlesize'] = 12
+from scipy.interpolate import interp1d
+from dateutil.parser import parse
+from dateutil.rrule import rrule, DAILY
 
 # Options
 PLOT_STACK = True
-WRITE_OUTFILE = True
+PLOT_OVERVIEW = False
+PLOT_SPATIAL = True
+WRITE_OUTFILE = False
 
-def reject_outliers(data):
-  return data[abs(data - np.mean(data)) < np.std(data)]
+def rejectOutliers(data):
 
-def runningMean(N, data):
+  """
+  def rejectOutliers
+  Removes values beyond 1 std in an array of floats
+  """
+
+  # No values: must be NaN
+  if len(data) == 0:
+    return np.nan
+
+  # Filter everything outside 1 stdev
+  return data[abs(data - np.mean(data)) <= np.std(data)]
+
+def runningMean(data, N):
   
   """
   def runningMean
   Simple way to calculate running mean including NaN data
   """
 
-  t = int(0.5 * N)
+  # Number of samples on both sides
+  TRUNC_HALF = int(0.5 * N)
 
-  mean = []
+  # Container for the mean values
+  mean = list()
 
-  for i in range(t, len(data) - t):
-    if np.isnan(data[i]):
+  # Go over all samples
+  for i, sample in enumerate(data):
+
+    # If the sample is NaN itself do not interpolate: keep gaps
+    if np.isnan(sample):
       mean.append(np.nan)
       continue
-    v = []
-    for j in range(i - t, i + t + 1):
-      if np.isnan(data[j]):
-        continue
-      v.append(data[j])
-    mean.append(np.sum(v) / len(v))
+
+    # Collect samples around the point but truncated edges
+    minimum = max(0, i - TRUNC_HALF)
+    maximum = min(len(data), i + TRUNC_HALF + 1)
+
+    # Append the mean
+    mean.append(np.nanmean(data[minimum:maximum]))
 
   return np.array(mean)
 
 def parseData(data, ids):
+
+  """
+  def parseData
+  Reads data from outfile
+  """
 
   colors = list()
   dates = list()
@@ -54,7 +72,7 @@ def parseData(data, ids):
   for line in data:
   
     # Extact data from line
-    (date, value, id, type) = line.split()
+    (date, value, id, type, azi, eli) = line.split()
     
     if int(id) != ids:
       continue
@@ -74,6 +92,75 @@ def parseData(data, ids):
 
   return dates, values, colors
 
+def plotSpatial(data):
+
+  # Create norm azimuth between 0 and 360
+  norm = plt.Normalize(0, 360)
+  cmap = plt.get_cmap("hsv", 36)
+  satellites = [17, 22, 28]
+ 
+  fig, axes = plt.subplots(len(satellites))
+
+  for i, ax in enumerate(axes):
+
+    for year in range(2015, 2020):
+
+      ax.axvline(x=datetime.datetime(year, 1, 1), alpha=0.25)
+      ax.set_ylim(0, 4)
+
+      # Plot satellite numbers
+      text = plt.text(0.03, 0.75, satellites[i],
+        horizontalalignment="center",
+        color="white",
+        fontsize=10,
+        transform = ax.transAxes
+      )
+
+      text.set_path_effects([
+        path_effects.Stroke(linewidth=4, foreground="black"),
+        path_effects.Normal()
+      ])
+
+      x, y, c = extractSatellite(data, satellites[i])
+      sc = ax.scatter(x, y, cmap=cmap, c=c, norm=norm)
+
+      if i < len(satellites) - 1:
+        ax.get_xaxis().set_visible(False)
+
+  fig.text(0.075, 0.5, "Reflector Height (m)", va="center", rotation="vertical")
+
+  # Create a colorbar for the entire plot
+  cbar = fig.colorbar(sc, ax=axes, ticks=range(0, 420, 30))
+  cbar.set_label("Azimuth (deg)", rotation=270, labelpad=20)
+
+  fig.set_size_inches(10.5, 0.6 * 10.5)
+  fig.savefig("color.pdf", dpi=100, bbox_inches="tight")
+
+def extractSatellite(data, index):
+
+  dates = list()
+  values = list()
+  azimuths = list()
+
+  for line in data:
+
+    # Parse the data
+    (date, value, id, type, azimuth, elevation) = line.split()
+
+    if int(id) != index:
+      continue
+
+    # Parse as a date string
+    date = parse(date)
+    value = float(value)
+    azimuth = float(azimuth)
+
+    dates.append(date)
+    values.append(value)
+    azimuths.append(azimuth)
+
+  return (dates, values, azimuths)
+
 def plotStack(data):
 
   """
@@ -81,58 +168,103 @@ def plotStack(data):
   Plot stacked satellites
   """
 
-  dates = dict()
+  # Make sure all days are included: missing days will be interpolated
+  START_DATE = datetime.date(2015, 1, 1)
+  END_DATE = datetime.date(2019, 5, 2)
+  BASELINE = 1.9
+
+  # Create a bucket for all dates and start appending data
+  datesDict = dict()
+  for dt in rrule(DAILY, dtstart=START_DATE, until=END_DATE):
+    datesDict[dt.strftime("%Y-%m-%d")] = []
 
   for line in data:
 
-    (date, value, id, type) = line.split()
+    # Parse the data
+    (date, value, id, type, azimuth, elivation) = line.split()
 
-    # Skip S2 signal
-    if type == "S2":
-      continue
+    # Parse as a date string
+    date = parse(date).strftime("%Y-%m-%d")
 
-    # Sort values by date
-    if date not in dates:
-      dates[date] = []
+    # Subtract from baseline
+    value = BASELINE - float(value)
 
-    dates[date].append(1.9 - float(value))
+    # Add the value to the respective date bucket
+    datesDict[date].append(value)
 
-  for date in dates:
-    dates[date] = reject_outliers(np.array(dates[date]))
+  # Reject all outliers in a single bucket
+  for date in datesDict:
+    datesDict[date] = rejectOutliers(np.array(datesDict[date]))
 
-  ds = list()
-  vs = list()
+  # Extract the keys and values
+  dates = np.array(list(map(lambda x: parse(x), datesDict.keys())))
+  values = np.array(list(map(lambda x: np.mean(x), datesDict.values())))
 
-  for date in dates:
-    ds.append(parse(date))
-    if (parse(date).month > 5 and parse(date).month < 11):
-      vs.append(0)
-    else:
-      vs.append(np.mean(dates[date]))
-
-  vs = np.array(vs)
-  ds = np.array(ds)
-
-  vs[vs < 0] = 0
-
-  # Take a smoothed running mean for 1 week
-  vs = runningMean(15, vs)
-  ds = ds[7:-7]
+  # Take a smoothed running mean for 2 weeks
+  dates, values = interpolate(dates, values)
+  values = runningMean(values, 9)
+  values = truncate(dates, values)
 
   with open("snow-curve.txt", "w") as outfile:
-    for date, value in zip(ds, vs):
+    for date, value in zip(dates, values):
       outfile.write(date.isoformat() + " " + str(value) + "\n")
   
   # Plot and show
-  with plt.style.context("grayscale"):
+  plt.plot(dates, values, c="darkgray", zorder=0)
+  plt.scatter(dates, values, s=4, c="gray", zorder=1)
+  plt.title("Expected snow depths during winter (2015 - 2019)")
+  plt.ylabel("Expected Snow Height (m)")
+  plt.xlabel("Date")
 
-    plt.plot(ds, vs, c='darkgray', zorder=0)
-    plt.scatter(ds, vs, s=4, c='gray', zorder=1)
-    plt.title("Expected snow heights during winter (2015 - 2019)")
-    plt.ylabel("Expected Snow Height (m)")
-    plt.xlabel("Date")
+  fig = plt.gcf()
+  fig.set_size_inches(10.5, 0.25 * 10.5)
+  fig.savefig("snow-curve.pdf", dpi=100, bbox_inches="tight")
 
-  plt.show()
+def truncate(dates, values):
+
+  """
+  def truncate
+  Truncates results to 0 sometimes
+  """
+
+  newValues = list()
+
+  for date, value in zip(dates, values):
+
+    # Summer months assume no snow!
+    if (date.month > 5 and date.month < 11):
+      value = 0
+
+    # Cannot be below the baseline
+    newValues.append(max(value, 0))
+
+  return newValues
+
+
+def interpolate(dates, values):
+
+  """
+  def interpolate
+  Interpolates missing date values
+  """
+
+  # Convert dates to float timestamps
+  timestamps = np.array(list(map(lambda x: x.timestamp(), dates)))
+
+  # Filter all np.nan values: they will be interpolated
+  idx = ~np.isnan(values)
+  filteredTimestamps = timestamps[idx]
+  values = values[idx]
+
+  # Interpolate with a cubic spline
+  spline = interp1d(
+    filteredTimestamps,
+    values,
+    kind="cubic",
+    bounds_error=False
+  )
+
+  return dates, spline(timestamps)
 
 def plotOverview(data):
 
@@ -141,35 +273,36 @@ def plotOverview(data):
   Plots an overview of all satellites
   """
 
-  fig, axs = plt.subplots(8, 4)
+  fig, axs = plt.subplots(2, 1)
 
-  for i in range(1, 33):
+  satellites = [19, 27]
 
-    dates, values, colors = parseData(data, i)
+  for _, i in enumerate(satellites):
 
-    x = (i - 1) % 4
-    y = int((i - 1) / 4)
+    dates, values, colors = parseData(data, (i + 1))
+
+    x = _ % 4
+    y = int(_ / 4)
+
+    ax = axs[x]
 
     # Plot bars for every year 
-    axs[y, x].axvline(x=datetime.datetime(2015, 1, 1), alpha=0.25)
-    axs[y, x].axvline(x=datetime.datetime(2016, 1, 1), alpha=0.25)
-    axs[y, x].axvline(x=datetime.datetime(2017, 1, 1), alpha=0.25)
-    axs[y, x].axvline(x=datetime.datetime(2018, 1, 1), alpha=0.25)
-    axs[y, x].axvline(x=datetime.datetime(2019, 1, 1), alpha=0.25)
+    for year in range(2015, 2020):
+      ax.axvline(x=datetime.datetime(year, 1, 1), alpha=0.25)
 
     # Plot the data
-    axs[y, x].scatter(dates, values, c=colors, s=2)
+    ax.scatter(dates, values, c=colors, s=2)
 
     # Axes are unnecessary
-    axs[y, x].get_xaxis().set_visible(False)
-    axs[y, x].get_yaxis().set_visible(False)
+    ax.get_xaxis().set_visible(False)
+    ax.get_yaxis().set_visible(False)
 
-    # Plot satellite number
-    text = plt.text(0.05, 0.75, i,
-      horizontalalignment='center',
+    # Plot satellite numbers
+    text = plt.text(0.10, 0.75, str(i + 1).zfill(2),
+      horizontalalignment="center",
       color="white",
-      fontsize=12,
-      transform = axs[y, x].transAxes
+      fontsize=10,
+      transform = ax.transAxes
     )
 
     text.set_path_effects([
@@ -177,23 +310,26 @@ def plotOverview(data):
       path_effects.Normal()
     ])
 
-  for ax in axs.flat:
-    ax.set(xlabel="Date", ylabel="Reflector Height")
-
-  for ax in axs.flat:
-    ax.label_outer()
-
-  plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=0, hspace=0)
-  plt.show()
-
+  fig.set_size_inches(10.5, 10.5)
+  fig.savefig("test2png.png", dpi=100, bbox_inches="tight")
 
 if __name__ == "__main__":
 
+  """
+  def __main__
+  Main entry point for processing SNR results to snow curve
+  """
+
   # Open the file written by analyze.py
-  with open("outfile-good.dat", "r") as infile:
+  with open("outfile.dat", "r") as infile:
     data = infile.read().split("\n")[:-1]
   
   if PLOT_STACK:
     plotStack(data)
-  else:
+
+  if PLOT_SPATIAL:
+    plotSpatial(data)
+  
+  if PLOT_OVERVIEW:
     plotOverview(data)
+    

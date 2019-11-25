@@ -22,7 +22,7 @@ from dateutil.parser import parse
 from scipy.signal import lombscargle
 
 # Some options
-SHOW_PLOT = False
+SHOW_PLOT = False 
 SPATIAL_FILTER = True
 APPLY_CORR = True
 POLY_ORDER = 2
@@ -124,9 +124,10 @@ def getHeight(freqs, power, type):
   # Extract maximum power and frequency
   fMax = freqs[ind]
 
-  # Extract h from equation (2)
-  return freq2height(fMax, type)
-
+  if np.mean(power) + 2 * np.std(power) < power[ind]:
+    return freq2height(fMax, type)
+  else:
+    return None
 
 def createPlot(x, y, s, z, f, p, date, i, type):
 
@@ -184,7 +185,7 @@ def createPlot(x, y, s, z, f, p, date, i, type):
   plt.clf()
 
 
-def getPlaneCoordinates(azimuth, elevationAngle):
+def getPlaneCoordinates(elevationAngle, azimuth):
 
   """
   def getPlaneCoordinates
@@ -203,7 +204,7 @@ def getPlaneCoordinates(azimuth, elevationAngle):
   r = RECEIVER_HEIGHT * np.tan(elevationAngle)
 
   # Combine with the azimuth to find the x, y coordinate of the reflection
-  return r * np.sin(azimuth), r * np.cos(azimuth) 
+  return r * np.cos(azimuth), r * np.sin(azimuth) 
 
 
 def extractMetadata(file):
@@ -227,22 +228,17 @@ def spatialFilter(elevations, azimuths):
   May filter reflections based on their spatial coordinates
   """
 
-  # Calculate the relative x, y coordinates
-  x, y = getPlaneCoordinates(elevations, azimuths)
-
-  # This quadrant returns the best results (no obstructions/vegetation)?
-  # Can be confirmed by looking at the reflector height results and
-  # cross referencing them against the xy-position of the reflections
-  # using the provided xy.py script
-  return np.where((x >= 0) & (y >= 0))
+  # Azimuths between 0 and 90
+  return np.where((azimuths > 20) & (azimuths < 80))
 
 
-def split(E, S1, s):
+def split(E, S1, S2, s, a):
 
   """
   def split
   Splits a satellite trace in multiple traces
   """
+
   traces = list()
 
   while True:
@@ -256,17 +252,21 @@ def split(E, S1, s):
     # Save one trace
     E1 = E[:ind]
     S11 = S1[:ind]
+    S21 = S2[:ind]
     s1 = s[:ind]
+    a1 = a[:ind]
 
-    traces.append((E1, S11, s1))
+    traces.append((E1, S11, S21, s1, a1))
 
     # Cut the next
     E = E[ind + 1:]
     S1 = S1[ind + 1:]
+    S2 = S2[ind + 1:]
     s = s[ind + 1:]
+    a = a[ind + 1:]
 
   # Remember the remaining trace!
-  traces.append((E, S1, s))
+  traces.append((E, S1, S2, s, a))
   
   return traces
   
@@ -280,19 +280,12 @@ def validate(E, S1, s):
 
   # Minimum number of samples
   NUMBER_OF_SAMPLES_MIN = 2000
-  SCATTER_MAXIMUM = 1
 
   # Get the length of the trace
   # Skip anything with not enough samples
   if len(E) < NUMBER_OF_SAMPLES_MIN:
     raise Exception("Not enough required samples (%s)." % NUMBER_OF_SAMPLES_MIN)
 
-  # Remove traces with high internal scatter
-  # Check the standard deviation of the difference between neighbouring samples
-  if np.std(np.diff(S1)) > SCATTER_MAXIMUM:
-    raise Exception("Trace sample scatter is too high.")
-
-  # Remove traces that are curved in the s, E domain
   # The satellite elevation angle must monotonically increase or decrease
   if not np.all(np.diff(E) < 0) or np.all(np.diff(E) > 0):
     raise Exception("Trace elevation is not monotonically increasing.")
@@ -305,15 +298,16 @@ def processSNRFile(data, date):
   Processes a single SNR file to extract snow height information
   """
 
-  raise Exception()
-
   results = dict({
     "date": date,
     "values": list()
   })
 
+  # Go over all satellites
+  satellites = range(0, 33)
+
   # Go over all possible GPS satellites in the snr file (1 - 32)
-  for i in range(1, 33):
+  for i in satellites:
   
     # Get the correct satellite
     idx = data["satellites"] == i
@@ -329,26 +323,27 @@ def processSNRFile(data, date):
     if SPATIAL_FILTER:
       idx = spatialFilter(elevations, azimuths)
 
-    elevations = elevations[idx]
-    seconds = seconds[idx]
-    S1 = S1[idx]
-    S2 = S2[idx]
+      elevations = elevations[idx]
+      seconds = seconds[idx]
+      azimuths = azimuths[idx]
+      S1 = S1[idx]
+      S2 = S2[idx]
 
     # No data after spatial filter
     if len(elevations) <= 1:
       continue
 
     # Extract the elevation and S1 (L1) data
-    for (E, S1, s) in split(elevations, S1, seconds):
-      height = processSignal(i, E, S1, s, "S1", date)
-      if height is not None:
-        results["values"].append((height, i, "S1"))
+    for (E, S1, S2, s, a) in split(elevations, S1, S2, seconds, azimuths):
 
-    # Extract the elevation and S1 (L1) data
-    for (E, S2, s) in split(elevations, S2, seconds):
+      height = processSignal(i, E, S1, s, "S1", date)
+
+      if height is not None:
+        results["values"].append((height, i, "S1", np.mean(a), np.mean(E)))
+
       height = processSignal(i, E, S2, s, "S2", date)
       if height is not None:
-        results["values"].append((height, i, "S2"))
+        results["values"].append((height, i, "S2", np.mean(a), np.mean(E)))
 
   return results
 
@@ -359,16 +354,16 @@ def processSignal(i, E, S1, s, type, date):
   Processes a single S1 or S2 signal
   """
 
-  # Validate the trace for its quality
-  try:
-    validate(E, S1, s)
-  except Exception as e:
-    print("SNR process aborted for satellite %s on %s: %s" % (i, date.isoformat(), e))
-    return None
-
   # Convert dBV to Volts: unclear to what reference the dB is expressed
   # According to Shuanggen et al., 2016 this is correct:
   vS1 = 10.0 ** (S1 / 20.0)
+
+  # Validate the trace for its quality
+  try:
+    validate(E, vS1, s)
+  except Exception as e:
+    print("SNR process aborted for satellite %s on %s: %s" % (i, date.isoformat(), e))
+    return None
 
   # Fit a 2nd order polynomial to the voltage data
   # Remove Pd & Pr (direct signal)
@@ -480,12 +475,12 @@ if __name__ == "__main__":
       if result is None:
         continue
 
-      print("Completed SNR process for %s." % result["date"].isoformat())
+      print("Completed SNR process for %s with %i traces." % (result["date"].isoformat(), len(result["values"])))
 
       # Write each result to a line
-      for (height, i, type) in result["values"]:
+      for (height, i, type, a, e) in result["values"]:
         with open("outfile.dat", "a") as outfile:
-          outfile.write("%s %.3f %i %s\n" % (result["date"].isoformat(), height, i, type))
+          outfile.write("%s %.3f %i %s %.3f %.3f\n" % (result["date"].isoformat(), height, i, type, a, e))
 
   except KeyboardInterrupt:
     pool.terminate()
