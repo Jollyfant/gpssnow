@@ -1,14 +1,31 @@
+#!/usr/local/bin/python3
+
 import os
 import sys
+import datetime
 import subprocess
 
 from dateutil.parser import parse
+from analyze import multiprocess
 
-# Change this to your data directory
-ROOT = "/Users/koymans/Documents/phd/data/ingv/int"
-RINEXDIR = "RINEX-EINT"
+def printVerbose(message):
+
+  """
+  def printVerbose
+  Prints verbose message
+  """
+  if configuration.v:
+    print(datetime.datetime.now().isoformat(), message)
+
+# Hoist configuration to global scope
+configuration = None
 
 def getSettings(type):
+
+  """
+  def getSettings
+  Returns settings based on GPS type
+  """
 
   if type == "ESLN":
     return [
@@ -33,11 +50,10 @@ def getSettings(type):
       "-O.pe[hEN,m]",
       "0.0083",
       "0.0000",
-      "0.0000",
-      "+nav"
+      "0.0000"
     ]
 
-  if type == "EINT":
+  elif type == "EINT":
     return [
       "./bin/teqc",
       "+C2",
@@ -60,25 +76,63 @@ def getSettings(type):
       "-O.pe[hEN,m]",
       "0.0083",
       "0.0000",
-      "0.0000",
-      "+nav"
+      "0.0000"
     ]
 
+  else:
+    raise ValueError("Unknown receiver type passed.")
+
+def parseArguments():
+
+  """
+  def parseArguments
+  Parses the CMD-line arguments
+  """
+
+  import argparse
+
+  # Some required arugments
+  parser = argparse.ArgumentParser(description="GNSS SNR conversion script from lb2 to RINEX .o files.")
+  parser.add_argument("--type", required=True, help="Receiver type")
+  parser.add_argument("-v", help="Verbose", action="store_true")
+
+  # Add I/O
+  parser.add_argument("input", help="Input directory of raw lb2 files.")
+  parser.add_argument("output", help="Output directory to write RINEX files.")
+
+  return parser.parse_args()
+
+def worker(file):
+
+  filepath = os.path.join(configuration.input, file)
+  
+  printVerbose("Converting file %s." % filepath)
+ 
+  settings = getSettings(configuration.type) + [filepath]
+
+  # Settings update some RINEX header fields
+  with open(os.path.join(configuration.output, file + ".o"), "w") as outfile:
+    subprocess.call(settings, stdout=outfile, stderr=subprocess.DEVNULL)
 
 if __name__ == "__main__":
 
-  # Make the output folder
-  if not os.path.exists(RINEXDIR):
-    os.makedirs(RINEXDIR)
-  
-  for file in sorted(os.listdir(ROOT)):
-  
-    filepath = os.path.join(ROOT, file)
-  
-    # Write to .o and .n (nav) to RINEX folder
-    # Settings update some RINEX header fields
-    with open(os.path.join(RINEXDIR, file + ".o"), "w") as outfile:
+  """
+  def __main__
+  Converts raw lb2 files to RINEX .o files
+  # Example python process.py -v --type EINT /Users/koymans/Documents/phd/data/ingv/int tmp
+  """
+  # Write configuration to global scope
+  configuration = parseArguments()
 
-      settings = getSettings("EINT") + [os.path.join(RINEXDIR, file + ".n"), filepath]
+  if not os.path.isdir(configuration.output):
+    raise ValueError("Output is not a valid directory.") 
+  if not os.path.isdir(configuration.input):
+    raise ValueError("Input is not a valid directory.") 
 
-      subprocess.call(settings, stdout=outfile, stderr=subprocess.DEVNULL)
+  files = sorted(os.listdir(configuration.input))
+
+  printVerbose("Collected %i files for processing." % len(files))
+
+  # Check if multiprocessing is requested
+  for file in files:
+    worker(file)

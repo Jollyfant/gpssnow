@@ -1,3 +1,5 @@
+#!/usr/local/bin/python3
+
 """
 
 Python script to infer snow height from GPS reflective interference
@@ -13,11 +15,22 @@ Author: Mathijs Koymans, Nov 2019, KNMI
 import numpy as np
 import os
 import datetime
+import multiprocessing
+import signal
 
 from dateutil.parser import parse
 
 # Hoist configuration to global scope
 configuration = None
+
+def printVerbose(message):
+
+  """
+  def printVerbose
+  Prints verbose message
+  """
+  if configuration.v:
+    print(datetime.datetime.now().isoformat(), message)
 
 def parseSNRFile(filepath, date):
 
@@ -253,8 +266,16 @@ def spatialFilter(azimuths):
   May filter reflections based on their spatial coordinates
   """
 
-  # Azimuths between 0 and 90
-  return np.where((azimuths > 20) & (azimuths < 70))
+  # Create a bitwise mask
+  mask = np.ones(len(azimuths), dtype=bool)
+
+  # Bitwise AND must be in between for all filters
+  for values in configuration.azimuths:
+    mask &= azimuths > values[0]
+    mask &= azimuths < values[1]
+
+  # Check indices that pass
+  return np.where(mask)
 
 
 def splitTraces(s):
@@ -273,7 +294,7 @@ def splitTraces(s):
 
     # A gap of over 1000s should be a new pass
     # Index of first gap exceeding this value
-    ind = np.argmax(np.diff(s) > 1000)
+    ind = np.argmax(np.diff(s) > 3600)
 
     # Nothing found: stop!
     if ind == 0:
@@ -335,7 +356,7 @@ def processSNRFile(data):
     S2 = data["S2"][idx]
   
     # Implement spatial filter based on receiver height
-    if configuration.filter:
+    if configuration.azimuths is not None:
 
       # Make sure to implement this for your azimuths
       idx = spatialFilter(azimuths)
@@ -376,6 +397,7 @@ def processTrace(i, elevations, S1, S2, seconds, azimuths):
 
     # Check if trace is OK
     if not validateTrace(traceElevation):
+      printVerbose("Trace for satellite %i did not validate." % i)
       continue
 
     # Determine whether trace is ascending or descending
@@ -397,7 +419,7 @@ def processTrace(i, elevations, S1, S2, seconds, azimuths):
         descending
       ))
 
-  print("SNR process completed for satellite %s with %i traces." % (i, len(results)))
+  printVerbose("SNR process completed for satellite %s with %i reflector heights." % (i, len(results)))
 
   return results
 
@@ -447,7 +469,7 @@ def getReflectorHeight(elevations, signal, type):
   )
   
   # Create the plot (not multiprocessing)
-  if not configuration.multiprocess and configuration.show:
+  if configuration.j is None and configuration.show:
     createPlot(elevations, detrended, voltage, polyvalues, freqs, power, type)
 
   return getHeight(freqs, power, type)
@@ -459,6 +481,8 @@ def worker(filepath):
   def worker
   Worker function passed to multiprocessing unit
   """
+
+  printVerbose("Worker %s handed file %s." % (multiprocessing.current_process(), filepath))
 
   # Extract the date from the filename
   date = parse(os.path.basename(filepath)[4:-10])
@@ -480,18 +504,15 @@ def worker(filepath):
     return None
 
 
-def multiprocess(O, files):
+def multiprocess(__OUPUT__, files):
 
   """
   def multiprocess
   Enables multiple processes
   """
 
-  import multiprocessing
-  import signal
-
   # Initialize multiprocessing env
-  NUMBER_OF_PROCESSES = multiprocessing.cpu_count()
+  NUMBER_OF_PROCESSES = configuration.j or multiprocessing.cpu_count()
 
   def initWorker():
   
@@ -500,19 +521,19 @@ def multiprocess(O, files):
     Initialzes a worker
     """
   
-    print("Initializing new worker process: %s." % multiprocessing.current_process())
+    printVerbose("Initializing new worker process: %s." % multiprocessing.current_process())
   
     # Ignore signal interrupts in the worker process
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-  print("Initializing pool of %i workers for processing." % NUMBER_OF_PROCESSES)
+  printVerbose("Initializing pool of %i workers for processing." % NUMBER_OF_PROCESSES)
 
   # Create a pool (one process for each core)
   pool = multiprocessing.Pool(NUMBER_OF_PROCESSES, initWorker)
 
   try:
     for result in pool.imap(worker, files):
-      saveResult(O, result)
+      saveResult(__OUPUT__, result)
   except KeyboardInterrupt:
     pool.terminate()
 
@@ -520,7 +541,7 @@ def multiprocess(O, files):
     pool.close()
     pool.join()
 
-def saveResult(O, result):
+def saveResult(__OUPUT__, result):
 
   """
   def saveResult
@@ -531,14 +552,14 @@ def saveResult(O, result):
   if result is None:
     return
 
-  print("Completed SNR process for %s with %i traces." % (result["date"].isoformat(), len(result["values"])))
+  printVerbose("Completed SNR process for %s with %i traces." % (result["date"].isoformat(), len(result["values"])))
 
   # Write each result to a line
   for (height, i, type, a, e, desc) in result["values"]:
-    with open(O, "a") as outfile:
+    with open(__OUPUT__, "a") as outfile:
       outfile.write("%s %.3f %i %s %.3f %.3f %i\n" % (result["date"].isoformat(), height, i, type, a, e, desc))
 
-def singleprocess(O, files):
+def singleprocess(__OUPUT__, files):
 
   """
   def singleprocess
@@ -546,7 +567,7 @@ def singleprocess(O, files):
   """
 
   for filepath in files:
-    saveResult(O, worker(filepath))
+    saveResult(__OUPUT__, worker(filepath))
 
 def getFiles(directory):
 
@@ -572,7 +593,6 @@ def parseSatellites(string):
 
   return [int(item) for item in string.split(",")]
 
-
 def parseArguments():
 
   """
@@ -583,10 +603,11 @@ def parseArguments():
   import argparse
 
   parser = argparse.ArgumentParser(description="GNSS SNR Analysis script.")
-  parser.add_argument("--multiprocess", help="Run multiple processes.", action="store_true")
+  parser.add_argument("-j", type=int, help="Run analysis over N multiple processes. Enter 0 for the number of available cores.")
+  parser.add_argument("-v", help="Run script in verbose.", action="store_true")
   parser.add_argument("--correction", help="Applies elevation observation angle correction.", action="store_true")
   parser.add_argument("--poly", help="Order of polynomial fit to direct power (default = 2).", default=2)
-  parser.add_argument("--filter", help="Enables an azimuthal filter: the correct filter must be implemented in the code!", action="store_true")
+  parser.add_argument("--azimuths", type=float, help="Set azimuthal filter to accept within range (--azimuth min max).", action="append", nargs=2)
   parser.add_argument("--satellites", type=parseSatellites, help="Comma delimited list of satellites (default = all).", default=range(1, 33))
   parser.add_argument("--samples", type=int, help="Number of minimum samples for a satellite trace to be used (default = 2000).", default=2000)
   parser.add_argument("--show", help="Shows SNR plot during processing (only works without multiprocess)", action="store_true")
@@ -603,6 +624,7 @@ if __name__ == "__main__":
   """
   def __main__
   Extracts reflector height using GNSS reflective interferometry. 
+  Example: python analyze.py -j 4 --correction --azimuth 20 70 snr outfile.dat
   """
 
   import sys
@@ -610,15 +632,15 @@ if __name__ == "__main__":
   # Write configuration to global scope
   configuration = parseArguments()
 
-  print("Reading files from directory %s and writing output to %s." % (configuration.input, configuration.output))
+  printVerbose("Reading files from directory %s and writing output to %s." % (configuration.input, configuration.output))
 
   # Get collection of the SNR files
   files = getFiles(configuration.input) 
 
-  print("Initializing set of %i files for processing." % len(files))
+  printVerbose("Initializing set of %i files for processing." % len(files))
 
   # Check if multiprocessing is requested
-  if configuration.multiprocess:
+  if configuration.j is not None:
     multiprocess(configuration.output, files)
   else:
     singleprocess(configuration.output, files)

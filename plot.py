@@ -36,36 +36,6 @@ def rejectOutliers(data):
   # Filter everything outside 1 stdev
   return data[abs(data - np.mean(data)) <= 2 * np.std(data)]
 
-def runningMean(data, N):
-  
-  """
-  def runningMean
-  Simple way to calculate running mean including NaN data
-  """
-
-  # Number of samples on both sides
-  TRUNC_HALF = int(0.5 * N)
-
-  # Container for the mean values
-  mean = list()
-
-  # Go over all samples
-  for i, sample in enumerate(data):
-
-    # If the sample is NaN itself do not interpolate: keep gaps
-    if np.isnan(sample):
-      mean.append(np.nan)
-      continue
-
-    # Collect samples around the point but truncated edges
-    minimum = max(0, i - TRUNC_HALF)
-    maximum = min(len(data), i + TRUNC_HALF + 1)
-
-    # Append the mean
-    mean.append(np.nanmean(data[minimum:maximum]))
-
-  return np.array(mean)
-
 def plotSpatial(data):
 
   # Create norm azimuth between 0 and 360
@@ -224,7 +194,7 @@ def parseData(data):
     (date, value, id, type, azimuth, elivation, desc) = line.split()
 
     azimuth = float(azimuth)
-    if azimuth < 20 or azimuth > 80:
+    if azimuth < 20 or azimuth > 70:
       continue
 
     date = parse(date)
@@ -246,10 +216,14 @@ def parseData(data):
 
 def plotScatter(data):
 
+  """
+
+  """
+
   (dates, values, colors) = parseData(data)
 
   # Take a running median!
-  groupedDates, groupedValues = groupData(15, dates, values)
+  groupedDates, groupedValues = groupData(11, dates, values)
   groupedValues = truncate(groupedDates, groupedValues)
  
   # Convert to numpy arrays
@@ -395,7 +369,7 @@ if __name__ == "__main__":
   """
 
   # Open the file written by analyze.py
-  with open("outfile-new.dat", "r") as infile:
+  with open("outfile.dat", "r") as infile:
     data = infile.read().split("\n")[:-1]
   
   plotScatter(data)

@@ -1,63 +1,102 @@
+#!/usr/local/bin/python3
 import datetime
 import os
 import subprocess
+import datetime
+
 from dateutil.parser import parse
+
+# Hoist
+configuration = None
+
+def printVerbose(message):
+
+  """
+  def printVerbose
+  Prints verbose message
+  """
+  if configuration.v:
+    print(datetime.datetime.now().isoformat(), message)
 
 def getSP3File(date):
 
-    """
-    def getSP3File
-    Convert date to spent weeks and day of week from a start date.
-    """
+  """
+  def getSP3File
+  Convert date to spent weeks and day of week from a start date.
+  """
 
-    # Start date of GPS weeks
-    GPS_START_DATE = datetime.datetime(1980, 1, 6)
+  # Start date of GPS weeks
+  GPS_START_DATE = datetime.datetime(1980, 1, 6)
 
-    # Get the tinem difference
-    delta = date - GPS_START_DATE 
+  # Get the tinem difference
+  delta = date - GPS_START_DATE 
 
-    if delta.days >= 0:
-        weeks = delta.days // 7
-        dayofweek = delta.days % 7
-        return os.path.join("sp3", "igs%d%d.sp3" % (weeks, dayofweek))
-    else:
-        raise ValueError('Invalid date: %s, too early.' %date)
+  if delta.days >= 0:
+    weeks = delta.days // 7
+    dayOfWeek = delta.days % 7
+    return os.path.join("sp3", "igs%d%d.sp3" % (weeks, dayOfWeek))
+  else:
+    raise ValueError("Invalid date: %s, too early." % date)
 
-I = "RINEX-EINT"
-O = "snr-eint"
+def parseArguments():
+
+  """
+  def parseArguments
+  Parses the CMD-line arguments
+  """
+
+  import argparse
+
+  # Some required arugments
+  parser = argparse.ArgumentParser(description="GNSS SNR conversion script from lb2 to RINEX .o files.")
+  parser.add_argument("--type", type=int, required=True, choices=[50, 66, 88, 98, 99])
+  parser.add_argument("-v", help="Verbose", action="store_true")
+
+  # Add I/O
+  parser.add_argument("input", help="Input directory of raw lb2 files.")
+  parser.add_argument("output", help="Output directory to write RINEX files.")
+
+  return parser.parse_args()
 
 if __name__ == "__main__":
 
-  GNSSSNR_OP = "99"
+  """
+  def __main__
+  Extracts SNR from RINEX files
+  # Example python snr.py -v --type 99 RINEX-EINT tmp
+  """
+  # Write configuration to global scope
+  configuration = parseArguments()
 
-  # Create SNR direcrory
-  if not os.path.exists(O):
-    os.makedirs(O)
+  if not os.path.isdir(configuration.output):
+    raise ValueError("Output is not a valid directory.")
+  if not os.path.isdir(configuration.input):
+    raise ValueError("Input is not a valid directory.")
 
-  for file in os.listdir(I):
+  for file in os.listdir(configuration.input):
 
-    # Skip .n (nav) files
     if not file.endswith(".o"):
       continue
 
-    print("Converting RINEX file %s." % file)
+    printVerbose("Converting RINEX file %s." % file)
 
-    date = parse(file[4:-6])
-    SP3File = getSP3File(date)
+    # Get the date of the file and respective SP3
+    SP3File = getSP3File(parse(file[4:-6]))
 
+    # Not available: skip
     if not os.path.exists(SP3File):
-      print("Could not find SP3 file for %s." % file)
+      printVerbose("Could not find SP3 file for %s." % file)
       continue
 
-    infile = os.path.join(I, file)
-    output = os.path.join(O, file + ".snr")
+    infile = os.path.join(configuration.input, file)
+    output = os.path.join(configuration.output, file + ".snr")
 
     subprocess.call([
       "./bin/gnssSNR",
       infile,
       output,
       SP3File,
-      GNSSSNR_OP
+      str(configuration.type),
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    print("Wrote output to %s." % output)
+    printVerbose("Wrote output to %s." % output)
