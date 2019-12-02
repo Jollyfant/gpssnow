@@ -1,8 +1,10 @@
-RINEX
+RINEX*
 __pycache__
 outfile*
 .DS_STORE
-snr
+snr*
 bin
 sp3
 plot*
+images
+data

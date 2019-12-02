@@ -23,15 +23,18 @@ def getSP3File(date):
     else:
         raise ValueError('Invalid date: %s, too early.' %date)
 
+I = "RINEX-EINT"
+O = "snr-eint"
+
 if __name__ == "__main__":
 
   GNSSSNR_OP = "99"
 
   # Create SNR direcrory
-  if not os.path.exist("snr"):
-    os.makedirs("snr")
+  if not os.path.exists(O):
+    os.makedirs(O)
 
-  for file in os.listdir("RINEX"):
+  for file in os.listdir(I):
 
     # Skip .n (nav) files
     if not file.endswith(".o"):
@@ -46,12 +49,12 @@ if __name__ == "__main__":
       print("Could not find SP3 file for %s." % file)
       continue
 
-    filepath = os.path.join("RINEX", file)
-    output = os.path.join("snr", file + ".snr")
+    infile = os.path.join(I, file)
+    output = os.path.join(O, file + ".snr")
 
     subprocess.call([
       "./bin/gnssSNR",
-      filepath,
+      infile,
       output,
       SP3File,
       GNSSSNR_OP

@@ -1,5 +1,5 @@
 """
-Example script to plot satellite
+Example script to plot satellite x,y reflector planes
 """
 
 import os
@@ -33,8 +33,7 @@ def poolWorker(file):
 
   data = parseSNRFile(lines, date)
   
-  return date, getHeatmap(data, 28)
-  #return date, np.array(list(map(lambda x: getHeatmap(data, x), range(32, 33))))
+  return date, np.array(list(map(lambda x: getHeatmap(data, x), range(1, 33))))
 
 def getHeatmap(data, i):
 
@@ -150,8 +149,10 @@ if __name__ == "__main__":
 
   NUMBER_OF_PROCESSES = multiprocessing.cpu_count()
 
+  I = "snr"
+
   # Get collection of the SNR files
-  files = sorted(os.listdir("snr"))
+  files = sorted(os.listdir(I))
 
   # Container for all stacked heatmaps
   heatStack = np.zeros(BINSIZE)
@@ -178,4 +179,4 @@ if __name__ == "__main__":
     pool.join()
 
   #plotOverview(heatStack)
-  plotSingle(heatStack)
+  #plotSingle(heatStack)
