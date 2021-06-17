@@ -1,4 +1,7 @@
 RINEX*
+*.dat
+*.pdf
+*.png
 __pycache__
 outfile*
 .DS_STORE

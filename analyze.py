@@ -123,7 +123,9 @@ def getCorrection(elevations, date):
   """
 
   # hPa at 1800 meters altitude
-  PRESSURE = 800
+  #PRESSURE = 800
+  # hPa at 2500 meters altitude
+  PRESSURE = 709
   temperature = getTemperature(date) 
 
   phi = np.radians(elevations + (7.31 / (elevations + 4.4)))
@@ -167,12 +169,23 @@ def createPlot(x, y, s, z, f, p, type):
   matplotlib.rcParams["font.family"] = "STIXGeneral"
   matplotlib.rcParams.update({"font.size": 12})
 
+  x = np.sin(np.radians(x))
+
+  # Get the maximum power pxx
+  ind = np.argmax(p)
+
+  pMax = p[ind]
+  fMax = f[ind]
+
+  # Plot reflector height (m) instead of angular frequency (Hz)
+  h = freq2height(f, type)
+  hMax = freq2height(fMax, type)
+
   # One
   ax = plt.subplot(2, 1, 1)
-  ax.set_ylabel("Volts")
+  ax.set_ylabel("SNR (Volts)")
   ax.set_ylim(50, 250)
   plt.plot(x, s, label="SNR data")
-  ax.set_xlim(14, 32)
   plt.plot(x, z, "--", c="orange", label="Polynomial fit")
   plt.legend()
 
@@ -183,15 +196,16 @@ def createPlot(x, y, s, z, f, p, type):
 
   # Two
   ax = plt.subplot(2, 1, 2)
-  ax.set_ylabel("Volts")
-  ax.set_xlabel("Elevation angle (deg)")
+  ax.set_ylabel("SNR (Volts)")
+  ax.set_xlabel("Sine Elevation Angle")
   plt.plot(x, y)
+  plt.plot(x, 50 * np.cos(fMax * x + 1.2 * np.pi), "--", c="red", label="Dominant Frequency")
   ax.set_ylim(-100, 100)
-  ax.set_xlim(14, 32)
+  plt.legend()
 
-  ax.yaxis.set_minor_locator(plticker.MultipleLocator(base=10))
-  ax.xaxis.set_major_locator(plticker.MultipleLocator(base=5))
-  ax.xaxis.set_minor_locator(plticker.MultipleLocator(base=0.5))
+  #ax.yaxis.set_minor_locator(plticker.MultipleLocator(base=10))
+  #ax.xaxis.set_major_locator(plticker.MultipleLocator(base=5))
+  #ax.xaxis.set_minor_locator(plticker.MultipleLocator(base=0.5))
 
   fig = plt.gcf()
   fig.set_size_inches(10.5, 0.5 * 10.5)
@@ -210,18 +224,8 @@ def createPlot(x, y, s, z, f, p, type):
   ax.yaxis.set_minor_locator(plticker.MultipleLocator(base=0.05))
   ax.xaxis.set_minor_locator(plticker.MultipleLocator(base=0.1))
 
-  # Get the maximum power pxx
-  ind = np.argmax(p)
-
-  pMax = p[ind]
-  fMax = f[ind]
-
-  # Plot reflector height (m) instead of angular frequency (Hz)
-  f = freq2height(f, type)
-  fMax = freq2height(fMax, type)
-
   # Plot the lomb scargle spectrum
-  plt.plot(f, p)
+  plt.plot(h, p)
 
   # Plot the peak value (green if significant)
   if np.mean(p) + 2 * np.std(p) < pMax:
@@ -230,8 +234,9 @@ def createPlot(x, y, s, z, f, p, type):
     color = "red"
 
   # Show the peak
-  plt.scatter(fMax, pMax, c=color, label="Dominant frequency $\omega_{\mathrm{P_{max}}}$")
+  plt.scatter(hMax, pMax, c=color, label="Dominant frequency $\omega_{\mathrm{P_{max}}}$")
   plt.legend()
+  plt.show()
 
   fig = plt.gcf()
   fig.set_size_inches(10.5, 0.25 * 10.5)
@@ -278,7 +283,7 @@ def spatialFilter(azimuths):
   return np.where(mask)
 
 
-def splitTraces(s):
+def splitTraces(seconds):
 
   """
   def splitTraces
@@ -294,7 +299,7 @@ def splitTraces(s):
 
     # A gap of over 1000s should be a new pass
     # Index of first gap exceeding this value
-    ind = np.argmax(np.diff(s) > 3600)
+    ind = np.argmax(np.diff(seconds) > 3600)
 
     # Nothing found: stop!
     if ind == 0:
@@ -305,7 +310,7 @@ def splitTraces(s):
     prev = ind + 1
 
     # Cut the seconds
-    s = s[prev:]
+    seconds = seconds[prev:]
 
   # The remaining trace of course (with no end)
   traces.append((prev, None))
@@ -401,7 +406,7 @@ def processTrace(i, elevations, S1, S2, seconds, azimuths):
       continue
 
     # Determine whether trace is ascending or descending
-    descending = np.all(np.diff(traceElevation) < 0)
+    descending = (traceElevation[0] - traceElevation[1]) > 0
 
     # Go over the S1 and S2 signals
     for (signal, signalType) in [(traceS1, "S1"), (traceS2, "S2")]:
@@ -409,14 +414,15 @@ def processTrace(i, elevations, S1, S2, seconds, azimuths):
       # Get the reflector height
       height = getReflectorHeight(traceElevation, signal, signalType)
 
-      # Save the height and some aux parameters for post-processing
+      # Save the height and some auxilliary parameters for post-processing
       results.append((
         height,
         i,
         signalType,
         np.mean(traceAzimuth),
         np.mean(traceElevation),
-        descending
+        descending,
+        len(traceElevation)
       ))
 
   printVerbose("SNR process completed for satellite %s with %i reflector heights." % (i, len(results)))
@@ -457,7 +463,7 @@ def getReflectorHeight(elevations, signal, type):
   sinElevations = np.sin(np.radians(elevations))
 
   # Linear space of angular frequencies to get the power at: should capture the peak
-  freqs = np.linspace(1, 200, 1E4)
+  freqs = np.linspace(1, 200, int(1E4))
 
   # Get the power at different periods using the Lomb Scargle algorithm for unregularly sampled data
   # Look at frequency content of SNR (dS1) as a function of sin(elevation)
@@ -489,22 +495,20 @@ def worker(filepath):
 
   # Skip all dates if requested
   if configuration.date is not None:
-    if date != parse(configuration.date):
+    if date < parse(configuration.date):
       return None
 
   # Extract data from the SNR file
   data = parseSNRFile(filepath, date)
 
   try:
-    return dict({
-      "date": date,
-      "values": processSNRFile(data)
-    })
+    return date, processSNRFile(data)
   except Exception as e:
+    print(e)
     return None
 
 
-def multiprocess(__OUPUT__, files):
+def multiprocess(files):
 
   """
   def multiprocess
@@ -533,7 +537,7 @@ def multiprocess(__OUPUT__, files):
 
   try:
     for result in pool.imap(worker, files):
-      saveResult(__OUPUT__, result)
+      saveResult(result)
   except KeyboardInterrupt:
     pool.terminate()
 
@@ -541,7 +545,7 @@ def multiprocess(__OUPUT__, files):
     pool.close()
     pool.join()
 
-def saveResult(__OUPUT__, result):
+def saveResult(results):
 
   """
   def saveResult
@@ -549,17 +553,20 @@ def saveResult(__OUPUT__, result):
   """
 
   # No result
-  if result is None:
+  if results is None:
     return
 
-  printVerbose("Completed SNR process for %s with %i traces." % (result["date"].isoformat(), len(result["values"])))
+  # Unpack
+  date, result = results
+
+  printVerbose("Completed SNR process for %s with %i traces." % (date.isoformat(), len(result)))
 
   # Write each result to a line
-  for (height, i, type, a, e, desc) in result["values"]:
-    with open(__OUPUT__, "a") as outfile:
-      outfile.write("%s %.3f %i %s %.3f %.3f %i\n" % (result["date"].isoformat(), height, i, type, a, e, desc))
+  with open(configuration.output, "a") as outfile:
+    for values in result:
+      outfile.write("%s %.3f %i %s %.3f %.3f %i %i\n" % (date.isoformat(), *values))
 
-def singleprocess(__OUPUT__, files):
+def singleprocess(files):
 
   """
   def singleprocess
@@ -567,7 +574,7 @@ def singleprocess(__OUPUT__, files):
   """
 
   for filepath in files:
-    saveResult(__OUPUT__, worker(filepath))
+    saveResult(worker(filepath))
 
 def getFiles(directory):
 
@@ -604,14 +611,14 @@ def parseArguments():
 
   parser = argparse.ArgumentParser(description="GNSS SNR Analysis script.")
   parser.add_argument("-j", type=int, help="Run analysis over N multiple processes. Enter 0 for the number of available cores.")
-  parser.add_argument("-v", help="Run script in verbose.", action="store_true")
+  parser.add_argument("-v", help="Run script in verbose mode.", action="store_true")
   parser.add_argument("--correction", help="Applies elevation observation angle correction.", action="store_true")
   parser.add_argument("--poly", help="Order of polynomial fit to direct power (default = 2).", default=2)
   parser.add_argument("--azimuths", type=float, help="Set azimuthal filter to accept within range (--azimuth min max).", action="append", nargs=2)
   parser.add_argument("--satellites", type=parseSatellites, help="Comma delimited list of satellites (default = all).", default=range(1, 33))
   parser.add_argument("--samples", type=int, help="Number of minimum samples for a satellite trace to be used (default = 2000).", default=2000)
   parser.add_argument("--show", help="Shows SNR plot during processing (only works without multiprocess)", action="store_true")
-  parser.add_argument("--date", help="Process SNR for a single date (ISO8601).", default=None)
+  parser.add_argument("--date", help="Process SNR for after single date (ISO8601).", default=None)
 
   # Add I/O
   parser.add_argument("input", help="Input directory of SNR files.")
@@ -624,7 +631,7 @@ if __name__ == "__main__":
   """
   def __main__
   Extracts reflector height using GNSS reflective interferometry. 
-  Example: python analyze.py -j 4 --correction --azimuth 20 70 snr outfile.dat
+  Example: python analyze.py -j 4 --correction --azimuths 20 70 snr outfile.dat
   """
 
   import sys
@@ -641,8 +648,8 @@ if __name__ == "__main__":
 
   # Check if multiprocessing is requested
   if configuration.j is not None:
-    multiprocess(configuration.output, files)
+    multiprocess(files)
   else:
-    singleprocess(configuration.output, files)
+    singleprocess(files)
 
   sys.exit(0)

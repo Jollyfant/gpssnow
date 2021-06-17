@@ -3,6 +3,7 @@ import datetime
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
 import matplotlib.ticker as plticker
+import os
 import matplotlib.dates as mdates
 import matplotlib
 import collections
@@ -17,10 +18,7 @@ matplotlib.rcParams["font.family"] = "STIXGeneral"
 matplotlib.rcParams.update({"font.size": 12})
 
 # Options
-PLOT_STACK = True
-PLOT_OVERVIEW = False
-PLOT_SPATIAL = True
-WRITE_OUTFILE = False
+configuration = None
 
 def rejectOutliers(data):
 
@@ -34,23 +32,26 @@ def rejectOutliers(data):
     return np.nan
 
   # Filter everything outside 1 stdev
-  return data[abs(data - np.mean(data)) <= 2 * np.std(data)]
+  return data[abs(data - np.mean(data)) <= 1 * np.std(data)]
 
-def plotSpatial(data):
+def plotSpatial(ids, dates, values, azimuths):
+
+  """
+  def plotSpatial
+  Plots a spatial overview with azimuthal colors
+  """
 
   # Create norm azimuth between 0 and 360
   norm = plt.Normalize(0, 360)
   cmap = plt.get_cmap("hsv", 36)
 
   # Satellites to plot
-  satellites = range(0, 33)
- 
-  fig, axes = plt.subplots(len(satellites))
+  fig, axes = plt.subplots(len(configuration.satellites))
 
   # Go over the satellites
-  for i, ax in enumerate(axes):
+  for i, ax in zip(configuration.satellites, axes):
 
-    ax.set_ylim(0, 4)
+    ax.set_ylim(-0.5, 1.5)
     ax.set_xlim(datetime.datetime(2015, 1, 1), datetime.datetime(2019, 5, 1))
 
     # Set the proper ticks
@@ -59,11 +60,11 @@ def plotSpatial(data):
     ax.xaxis.set_major_locator(mdates.YearLocator())
 
     # Plot satellite numbers in the corner
-    text = plt.text(0.06, 0.8, "PRN " + str(satellites[i]),
+    text = plt.text(0.06, 0.8, "PRN " + str(i).zfill(2),
       horizontalalignment="center",
       color="white",
       fontsize=12,
-      transform = ax.transAxes
+      transform=ax.transAxes
     )
 
     text.set_path_effects([
@@ -72,11 +73,16 @@ def plotSpatial(data):
     ])
 
     # Plot the data
-    x, y, c = extractSatelliteAzimuth(data, satellites[i])
+    idx = ids == i
+
+    x = dates[idx]
+    y = values[idx]
+    c = azimuths[idx]
+
     sc = ax.scatter(x, y, cmap=cmap, c=c, norm=norm, label=str(i))
 
     # Only bottom figure must have labels
-    if i < len(satellites) - 1:
+    if i < len(configuration.satellites) - 1:
       ax.xaxis.set_major_formatter(plt.NullFormatter())
     else:
       ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
@@ -88,33 +94,8 @@ def plotSpatial(data):
   cbar = fig.colorbar(sc, ax=axes, ticks=range(0, 420, 30))
   cbar.set_label("Average azimuth (deg)", rotation=270, labelpad=20)
 
-  fig.set_size_inches(10.5, 0.5 * 0.33 * len(satellites) * 10.5)
-  fig.savefig("color.pdf", dpi=100, bbox_inches="tight")
-
-def extractSatelliteAzimuth(data, index):
-
-  dates = list()
-  values = list()
-  azimuths = list()
-
-  for line in data:
-
-    # Parse the data
-    (date, value, id, type, azimuth, elevation) = line.split()
-
-    if int(id) != index:
-      continue
-
-    # Parse as a date string
-    date = parse(date)
-    value = float(value)
-    azimuth = float(azimuth)
-
-    dates.append(date)
-    values.append(value)
-    azimuths.append(azimuth)
-
-  return (dates, values, azimuths)
+  fig.set_size_inches(10.5, 0.5 * 0.33 * len(configuration.satellites) * 10.5)
+  fig.savefig(configuration.output + "-azimuth.pdf", dpi=100, bbox_inches="tight")
 
 def groupData(N, dates, values):
 
@@ -136,13 +117,13 @@ def groupData(N, dates, values):
   for date, value in zip(dates, values):
     datesDict[date.strftime("%Y-%m-%d")].append(value)
 
-  return meanData(N, datesDict)
+  return medianData(N, datesDict)
 
-def meanData(N, datesDict):
+def medianData(N, datesDict):
 
   """
-  def meanData
-  Takes a running mean of the cloud of scatter points
+  def medianData
+  Takes a running mean of the cloud of curve points
   """
 
   meanValues = list()
@@ -175,77 +156,103 @@ def meanData(N, datesDict):
 
   return meanDates, meanValues
     
+def inRange(azimuth):
+
+  for ranges in configuration.azimuths:
+    if azimuth < ranges[0] or azimuth > ranges[1]:
+      return False
+
+  return True
+
 def parseData(data):
 
   """
   def parseData
-  Plots scatter plot of all reflector heights
+  Plots curve plot of all reflector heights
   """
-
-  BASELINE = 1.9
 
   dates = list()
   colors = list()
   values = list()
+  azimuths = list()
+  ids = list()
 
   for line in data:
 
     # Parse the data and subtract baseline
-    (date, value, id, type, azimuth, elivation, desc) = line.split()
+    (date, value, id, type, azimuth, elevation, desc, samples) = line.split()
 
-    azimuth = float(azimuth)
-    if azimuth < 20 or azimuth > 70:
+    id = int(id)
+    samples = int(samples)
+
+    if samples < configuration.samples:
       continue
 
-    date = parse(date)
-    value = BASELINE - float(value)
+    # Skip some satellites
+    if id not in configuration.satellites:
+      continue
 
+    azimuth = float(azimuth)
+
+    if configuration.azimuths is not None:
+      if not inRange(azimuth):
+        continue
+
+    date = parse(date)
+    value = configuration.baseline - float(value)
+
+    ids.append(id)
     dates.append(date)
     values.append(value)
+    azimuths.append(azimuth)
 
     if type == "S1":
       colors.append(0)
-      #colors.append(azimuth)
-      #colors.append(int(desc))
-    else:
+    elif type == "S2":
       colors.append(1)
-      #colors.append(azimuth)
-      #colors.append(int(desc))
+    else:
+      raise ValueError("Unknown type.")
 
-  return dates, values, colors
+  return np.array(ids), np.array(dates), np.array(values), np.array(azimuths), np.array(colors)
 
-def plotScatter(data):
+
+def plotScatter(dates, values, colors):
 
   """
-
+  def plotScatter
+  Plots curve and fitted snow curve
   """
-
-  (dates, values, colors) = parseData(data)
 
   # Take a running median!
-  groupedDates, groupedValues = groupData(11, dates, values)
-  groupedValues = truncate(groupedDates, groupedValues)
+  groupedDates, groupedValues = groupData(configuration.window, dates, values)
+
+  # Truncate values
+  if configuration.truncate:
+    groupedValues = truncate(groupedDates, groupedValues)
  
   # Convert to numpy arrays
   dates = np.array(dates)
   values = np.array(values)
   colors = np.array(colors)
 
+  #plt.scatter(dates, values, c=colors, s=1)
+  #plt.colorbar()
+  plt.show()
+  #sys.exit(0)
+  # Group S1 and S2 values
   S1Dates = dates[colors == 0]
   S1Values = values[colors == 0]
 
   S2Dates = dates[colors == 1]
   S2Values = values[colors == 1]
 
-  #plt.scatter(dates, values, s=1, c=colors, label="L1 frequency")
-  #plt.colorbar()
-  # Plot the data data
+  ### Plot the data data
   plt.scatter(S1Dates, S1Values, s=1, c="lightgrey", label="L1 frequency")
   plt.scatter(S2Dates, S2Values, s=1, c="darkgrey", label="L2 frequency")
   plt.plot(groupedDates, groupedValues, "--", c="red", linewidth=2, label="Snow depth")
 
   # Layout
-  plt.title("Estimated snow depth at EINT using GNSS interferometric reflectometry")
+  plt.title("Estimated snow depth at ESLN using GNSS interferometric reflectometry")
   
   # Axes
   plt.ylabel("Snow depth (m)")
@@ -260,13 +267,16 @@ def plotScatter(data):
   # Legend
   legend = plt.gca().legend(markerscale=6, facecolor="white", loc="best", prop={"size": "x-small"}, framealpha=1)
 
+  #plt.show()
+  # Plot the snow curve
   fig = plt.gcf()
   fig.set_size_inches(10.5, 0.25 * 10.5)
-  fig.savefig("snow-curve.pdf", dpi=100, bbox_inches="tight")
+  fig.savefig(configuration.output + "-curve.png", dpi=100, bbox_inches="tight")
 
-  with open("snow-curve.txt", "w") as outfile:
+  # Write the snow curve
+  with open(configuration.output + "-curve.dat", "w") as outfile:
     for date, value in zip(groupedDates, groupedValues):
-      outfile.write(date.isoformat() + " " + str(value) + "\n")
+      outfile.write("%s %.3f\n" % (date.isoformat(), value))
 
 def truncate(dates, values):
 
@@ -314,52 +324,39 @@ def interpolate(dates, values):
 
   return dates, spline(timestamps)
 
-def plotOverview(data):
+def parseSatellites(string):
 
   """
-  def plotOverview
-  Plots an overview of all satellites
+  def parseSatellites
+  Parses comma delimited input list to satellite range
   """
 
-  fig, axs = plt.subplots(2, 1)
+  return [int(item) for item in string.split(",")]
 
-  satellites = [19, 27]
+def parseArguments():
 
-  for _, i in enumerate(satellites):
+  """
+  def parseArguments
+  Parses the CMD-line arguments
+  """
 
-    dates, values, colors = extractSatelliteAzimuth(data, i)
+  import argparse
 
-    x = _ % 4
-    y = int(_ / 4)
+  parser = argparse.ArgumentParser(description="GNSS SNR Analysis plotting sript.")
+  parser.add_argument("--truncate", help="Truncates snow depths to 0 when negative.", action="store_true")
+  parser.add_argument("--curve", help="Saves curve plot of snow curve", action="store_true")
+  parser.add_argument("--spatial", help="Saves spatial overview plot of satellites", action="store_true")
+  parser.add_argument("--azimuths", type=float, help="Set azimuthal filter to accept within range (--azimuth min max).", action="append", nargs=2)
+  parser.add_argument("--satellites", type=parseSatellites, help="Comma delimited list of satellites (default = all).", default=range(1, 33))
+  parser.add_argument("--baseline", type=float, help="Baseline for reflector height", default=0)
+  parser.add_argument("--samples", type=float, help="Minimum number of samples for a trace (default = 2000).", default=0)
+  parser.add_argument("--window", type=float, help="Length of running median window (default = 11).", default=11)
 
-    ax = axs[x]
+  # Add I/O
+  parser.add_argument("input", help="Input reflector height file.")
+  parser.add_argument("output", help="Output name to write results.")
 
-    # Plot bars for every year 
-    for year in range(2015, 2020):
-      ax.axvline(x=datetime.datetime(year, 1, 1), alpha=0.25)
-
-    # Plot the data
-    ax.scatter(dates, values, c=colors, s=2)
-
-    # Axes are unnecessary
-    ax.get_xaxis().set_visible(False)
-    ax.get_yaxis().set_visible(False)
-
-    # Plot satellite numbers
-    text = plt.text(0.10, 0.75, str(i + 1).zfill(2),
-      horizontalalignment="center",
-      color="white",
-      fontsize=10,
-      transform = ax.transAxes
-    )
-
-    text.set_path_effects([
-      path_effects.Stroke(linewidth=4, foreground="black"),
-      path_effects.Normal()
-    ])
-
-  fig.set_size_inches(10.5, 10.5)
-  fig.savefig("test2png.png", dpi=100, bbox_inches="tight")
+  return parser.parse_args()
 
 if __name__ == "__main__":
 
@@ -368,17 +365,20 @@ if __name__ == "__main__":
   Main entry point for processing SNR results to snow curve
   """
 
+  # Write configuration to global scope
+  configuration = parseArguments()
+
+  if not os.path.isfile(configuration.input):
+    raise ValueError("Input is not a valid file.")
+
   # Open the file written by analyze.py
-  with open("outfile.dat", "r") as infile:
+  with open(configuration.input, "r") as infile:
     data = infile.read().split("\n")[:-1]
   
-  plotScatter(data)
-  #plotOverview(data)
-  #plotSpatial(data)
+  (ids, dates, values, azimuths, colors) = parseData(data)
 
-  #if PLOT_SPATIAL:
-    #plotSpatial(data)
-  
-  #if PLOT_OVERVIEW:
-    #plotOverview(data)
-    
+  # Make plots
+  if configuration.curve:
+    plotScatter(dates, values, colors)
+  if configuration.spatial:
+    plotSpatial(ids, dates, values, azimuths)
